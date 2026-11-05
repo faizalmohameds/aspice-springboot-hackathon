@@ -1,3 +1,4 @@
+
 package com.example.aspicedemo;
 
 import org.junit.jupiter.api.Test;
@@ -19,9 +20,12 @@ class HealthControllerTest {
 
     @Test
     void statusEndpointReturnsUp() throws Exception {
+
         mockMvc.perform(get("/api/status"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.application").value("aspice-demo"))
-                .andExpect(jsonPath("$.status").value("UP"));
+                .andExpect(jsonPath("$.application")
+                        .value("aspice-demo"))
+                .andExpect(jsonPath("$.status")
+                        .value("UP"));
     }
 }
