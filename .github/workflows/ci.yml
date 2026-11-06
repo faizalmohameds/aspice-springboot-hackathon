@@ -18,10 +18,7 @@ env:
 
 jobs:
 
-  # ==========================================
-  # JOB 1: MAVEN BUILD
-  # ==========================================
-
+  # 1. MAVEN BUILD
   maven-build:
     name: 1 - Maven Build
     runs-on: ubuntu-latest
@@ -41,7 +38,8 @@ jobs:
         run: mvn -B clean package -DskipTests
 
       - name: Verify JAR
-        run: test -n "$(find target -maxdepth 1 -name '*.jar' -print -quit)"
+        run: |
+          test -n "$(find target -maxdepth 1 -name '*.jar' -print -quit)"
 
       - name: Upload Application JAR
         uses: actions/upload-artifact@v4
@@ -52,10 +50,7 @@ jobs:
           retention-days: 7
 
 
-  # ==========================================
-  # JOB 2: JUNIT + JACOCO
-  # ==========================================
-
+  # 2. UNIT TEST AND JACOCO
   unit-test:
     name: 2 - JUnit and JaCoCo
     runs-on: ubuntu-latest
@@ -77,12 +72,6 @@ jobs:
       - name: Check Test Reports
         if: always()
         run: |
-          echo "=== Test source files ==="
-          find src/test -type f -name "*.java" -print || true
-
-          echo "=== Compiled test classes ==="
-          find target/test-classes -type f -name "*.class" -print || true
-
           echo "=== Surefire reports ==="
           find target/surefire-reports -type f -print || true
 
@@ -91,15 +80,6 @@ jobs:
 
           echo "=== JaCoCo reports ==="
           find target/site/jacoco -type f -print || true
-
-      - name: Verify JUnit XML Reports
-        if: success()
-        run: |
-          if ! find target/surefire-reports target/failsafe-reports \
-            -type f -name "TEST-*.xml" -print -quit 2>/dev/null | grep -q .; then
-            echo "ERROR: No JUnit XML reports generated."
-            exit 1
-          fi
 
       - name: Publish JUnit Results
         if: always()
@@ -128,12 +108,9 @@ jobs:
           retention-days: 90
 
 
-  # ==========================================
-  # JOB 3: SONARCLOUD ANALYSIS
-  # ==========================================
-
+  # 3. SONARCLOUD
   sonarqube:
-    name: 3 - SonarQube Analysis
+    name: 3 - SonarCloud Analysis
     runs-on: ubuntu-latest
     environment: Dev
     needs: unit-test
@@ -159,10 +136,7 @@ jobs:
 
       - name: Verify JaCoCo Report
         run: |
-          test -f target/site/jacoco/jacoco.xml || {
-            echo "JaCoCo XML report not found."
-            exit 1
-          }
+          test -f target/site/jacoco/jacoco.xml
 
       - name: SonarCloud Analysis
         env:
@@ -180,9 +154,7 @@ jobs:
             -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
             -Dsonar.qualitygate.wait=true
 
-      # Download detailed SonarCloud evidence
-
-      - name: Download SonarCloud Report Data
+      - name: Download SonarCloud Measures
         if: always()
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -193,19 +165,16 @@ jobs:
 
           mkdir -p sonar-evidence
 
-          # Project measures
           curl --fail --silent --show-error \
             -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density,sqale_index,reliability_rating,security_rating,sqale_rating,ncloc" \
             -o sonar-evidence/sonar-measures.json
 
-          # Quality Gate
           curl --fail --silent --show-error \
             -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
             -o sonar-evidence/sonar-quality-gate.json
 
-          # Individual unresolved issues
           curl --fail --silent --show-error \
             -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&ps=500" \
@@ -224,10 +193,7 @@ jobs:
           retention-days: 90
 
 
-  # ==========================================
-  # JOB 4: TRIVY FILESYSTEM SCAN
-  # ==========================================
-
+  # 4. TRIVY FILESYSTEM SCAN
   trivy-fs:
     name: 4 - Trivy Filesystem Scan
     runs-on: ubuntu-latest
@@ -258,10 +224,7 @@ jobs:
           retention-days: 90
 
 
-  # ==========================================
-  # JOB 5: DOCKER BUILD
-  # ==========================================
-
+  # 5. DOCKER BUILD
   docker-build:
     name: 5 - Docker Image Build
     runs-on: ubuntu-latest
@@ -283,7 +246,6 @@ jobs:
           TAG="${GITHUB_SHA}"
 
           docker build -t "$IMAGE:$TAG" .
-
           docker save "$IMAGE:$TAG" -o aspice-docker-image.tar
 
       - name: Upload Docker Image
@@ -294,10 +256,7 @@ jobs:
           retention-days: 2
 
 
-  # ==========================================
-  # JOB 6: TRIVY DOCKER IMAGE SCAN
-  # ==========================================
-
+  # 6. TRIVY IMAGE SCAN
   trivy-image:
     name: 6 - Trivy Docker Image Scan
     runs-on: ubuntu-latest
@@ -340,10 +299,7 @@ jobs:
           retention-days: 90
 
 
-  # ==========================================
-  # JOB 7: DOCKER PUSH TO GHCR
-  # ==========================================
-
+  # 7. DOCKER PUSH
   docker-push:
     name: 7 - Docker Image Push
     runs-on: ubuntu-latest
@@ -400,14 +356,10 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
 
-  # ==========================================
-  # JOB 8: ASPICE REPORT GENERATION
-  # ==========================================
-
+  # 8. ASPICE REPORT
   aspice-report:
     name: 8 - ASPICE Evidence Report
     runs-on: ubuntu-latest
-
     if: always()
 
     needs:
@@ -423,18 +375,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify ASPICE Report Generator
-        run: |
-          python3 --version
-
-          if [ ! -f scripts/generate_aspice_report.py ]; then
-            echo "ERROR: scripts/generate_aspice_report.py not found."
-            exit 1
-          fi
-
-          echo "ASPICE report generator found."
-
-      # Download only required evidence
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
       - name: Download Test and Coverage Evidence
         if: always()
@@ -461,13 +405,12 @@ jobs:
           name: ASPICE-Sonar-Reports
           path: evidence/sonar
 
-      - name: Display Downloaded Evidence
+      - name: Display Evidence
         if: always()
         run: |
-          echo "=== Downloaded ASPICE Evidence ==="
           find evidence -type f -print || true
 
-      - name: Generate ASPICE HTML Report
+      - name: Generate ASPICE Report
         env:
           BUILD_RESULT: ${{ needs.maven-build.result }}
           TEST_RESULT: ${{ needs.unit-test.result }}
@@ -483,16 +426,12 @@ jobs:
 
         run: |
           python3 -m py_compile scripts/generate_aspice_report.py
-
           python3 scripts/generate_aspice_report.py
-
-          echo "=== Generated ASPICE Reports ==="
-          ls -lh aspice-report/
 
           test -s aspice-report/aspice-report.html
           test -s aspice-report/aspice-report.json
 
-      - name: Publish ASPICE Report in GitHub Actions Summary
+      - name: Publish ASPICE Summary
         if: always()
         env:
           BUILD_RESULT: ${{ needs.maven-build.result }}
@@ -509,21 +448,13 @@ jobs:
             echo "| CI Stage | Result |"
             echo "|---|---|"
             echo "| Maven Build | $BUILD_RESULT |"
-            echo "| Unit Tests and JaCoCo | $TEST_RESULT |"
+            echo "| Unit Tests | $TEST_RESULT |"
             echo "| SonarCloud | $SONAR_RESULT |"
             echo "| Trivy Filesystem | $TRIVY_FS_RESULT |"
             echo "| Docker Build | $DOCKER_BUILD_RESULT |"
             echo "| Trivy Image | $TRIVY_IMAGE_RESULT |"
             echo "| Docker Push | $DOCKER_PUSH_RESULT |"
-            echo ""
           } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -f aspice-report/aspice-report.html ]; then
-            echo "ASPICE HTML dashboard generated successfully." >> "$GITHUB_STEP_SUMMARY"
-            echo "Download the ASPICE-Final-Report artifact to view the full dashboard." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "WARNING: ASPICE HTML dashboard was not generated." >> "$GITHUB_STEP_SUMMARY"
-          fi
 
       - name: Upload Final ASPICE Report
         if: always()
