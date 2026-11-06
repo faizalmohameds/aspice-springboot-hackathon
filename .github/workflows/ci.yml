@@ -164,7 +164,7 @@ jobs:
             exit 1
           }
 
-      - name: SonarQube Analysis
+      - name: SonarCloud Analysis
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -180,8 +180,7 @@ jobs:
             -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
             -Dsonar.qualitygate.wait=true
 
-      # Download SonarCloud measures and Quality Gate status.
-      # if: always() also allows collection when the Quality Gate fails.
+      # Download detailed SonarCloud evidence
 
       - name: Download SonarCloud Report Data
         if: always()
@@ -194,17 +193,25 @@ jobs:
 
           mkdir -p sonar-evidence
 
+          # Project measures
           curl --fail --silent --show-error \
             -u "$SONAR_TOKEN:" \
-            "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density" \
+            "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density,sqale_index,reliability_rating,security_rating,sqale_rating,ncloc" \
             -o sonar-evidence/sonar-measures.json
 
+          # Quality Gate
           curl --fail --silent --show-error \
             -u "$SONAR_TOKEN:" \
             "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
             -o sonar-evidence/sonar-quality-gate.json
 
-          echo "SonarCloud report data downloaded."
+          # Individual unresolved issues
+          curl --fail --silent --show-error \
+            -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&ps=500" \
+            -o sonar-evidence/sonar-issues.json
+
+          echo "SonarCloud evidence downloaded."
           ls -lh sonar-evidence/
 
       - name: Upload SonarCloud Reports
@@ -354,6 +361,11 @@ jobs:
       contents: read
       packages: write
 
+    outputs:
+      image: ${{ steps.push-image.outputs.image }}
+      tag: ${{ steps.push-image.outputs.tag }}
+      digest: ${{ steps.push-image.outputs.digest }}
+
     steps:
       - name: Download Docker Image
         uses: actions/download-artifact@v4
@@ -372,8 +384,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push Docker Image
+        id: push-image
         run: |
-          docker push "${IMAGE_NAME,,}:${GITHUB_SHA}"
+          IMAGE="${IMAGE_NAME,,}"
+          TAG="${GITHUB_SHA}"
+
+          docker push "$IMAGE:$TAG"
+
+          DIGEST=$(docker inspect \
+            --format='{{index .RepoDigests 0}}' \
+            "$IMAGE:$TAG" | cut -d '@' -f 2)
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
 
   # ==========================================
@@ -410,8 +434,7 @@ jobs:
 
           echo "ASPICE report generator found."
 
-      # Download only the reports needed by the dashboard.
-      # Do not download the Docker image TAR into the evidence directory.
+      # Download only required evidence
 
       - name: Download Test and Coverage Evidence
         if: always()
@@ -453,11 +476,21 @@ jobs:
           DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
           TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
           DOCKER_PUSH_RESULT: ${{ needs.docker-push.result }}
+
+          DOCKER_IMAGE: ${{ needs.docker-push.outputs.image || 'ghcr.io/${{ github.repository }}' }}
+          DOCKER_TAG: ${{ needs.docker-push.outputs.tag || github.sha }}
+          DOCKER_DIGEST: ${{ needs.docker-push.outputs.digest || 'Not available' }}
+
         run: |
+          python3 -m py_compile scripts/generate_aspice_report.py
+
           python3 scripts/generate_aspice_report.py
 
-          echo "=== Generated ASPICE Report ==="
+          echo "=== Generated ASPICE Reports ==="
           ls -lh aspice-report/
+
+          test -s aspice-report/aspice-report.html
+          test -s aspice-report/aspice-report.json
 
       - name: Publish ASPICE Report in GitHub Actions Summary
         if: always()
@@ -489,7 +522,7 @@ jobs:
             echo "ASPICE HTML dashboard generated successfully." >> "$GITHUB_STEP_SUMMARY"
             echo "Download the ASPICE-Final-Report artifact to view the full dashboard." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "WARNING: aspice-report/aspice-report.html was not generated." >> "$GITHUB_STEP_SUMMARY"
+            echo "WARNING: ASPICE HTML dashboard was not generated." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload Final ASPICE Report
