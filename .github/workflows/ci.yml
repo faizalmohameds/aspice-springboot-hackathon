@@ -11,8 +11,6 @@ on:
 permissions:
   contents: read
   checks: write
-  security-events: write
-  packages: write
 
 env:
   JAVA_VERSION: '21'
@@ -42,82 +40,92 @@ jobs:
       - name: Maven Package
         run: mvn -B clean package -DskipTests
 
+      - name: Verify JAR
+        run: test -n "$(find target -maxdepth 1 -name '*.jar' -print -quit)"
+
       - name: Upload Application JAR
         uses: actions/upload-artifact@v4
         with:
           name: ASPICE-Application-JAR
           path: target/*.jar
+          if-no-files-found: error
           retention-days: 7
 
 
+  # ==========================================
+  # JOB 2: JUNIT + JACOCO
+  # ==========================================
 
-# ==========================================
-# JOB 2: JUNIT + JACOCO
-# ==========================================
+  unit-test:
+    name: 2 - JUnit and JaCoCo
+    runs-on: ubuntu-latest
 
-unit-test:
-  name: 2 - JUnit and JaCoCo
-  runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
 
-    - name: Setup Java 21
-      uses: actions/setup-java@v4
-      with:
-        distribution: temurin
-        java-version: '21'
-        cache: maven
+      - name: Maven Tests and Coverage
+        run: mvn -B clean verify
 
-    - name: Maven Tests and Coverage
-      run: mvn -B clean verify
+      - name: Check Test Reports
+        if: always()
+        run: |
+          echo "=== Test source files ==="
+          find src/test -type f -name "*.java" -print || true
 
-    # NEW: Diagnose test execution and report generation
-    - name: Check Test Reports
-      if: always()
-      run: |
-        echo "=== Test source files ==="
-        find src/test -type f -name "*.java" -print || true
+          echo "=== Compiled test classes ==="
+          find target/test-classes -type f -name "*.class" -print || true
 
-        echo "=== Compiled test classes ==="
-        find target/test-classes -type f -name "*.class" -print || true
+          echo "=== Surefire reports ==="
+          find target/surefire-reports -type f -print || true
 
-        echo "=== Surefire reports ==="
-        find target/surefire-reports -type f -print || true
+          echo "=== Failsafe reports ==="
+          find target/failsafe-reports -type f -print || true
 
-        echo "=== Failsafe reports ==="
-        find target/failsafe-reports -type f -print || true
+          echo "=== JaCoCo reports ==="
+          find target/site/jacoco -type f -print || true
 
-        echo "=== JaCoCo reports ==="
-        find target/site/jacoco -type f -print || true
+      - name: Verify JUnit XML Reports
+        if: success()
+        run: |
+          if ! find target/surefire-reports target/failsafe-reports \
+            -type f -name "TEST-*.xml" -print -quit 2>/dev/null | grep -q .; then
+            echo "ERROR: No JUnit XML reports generated."
+            exit 1
+          fi
 
-    - name: Publish JUnit Results
-      if: always()
-      uses: dorny/test-reporter@v2
-      with:
-        name: JUnit Test Results
-        path: |
-          target/surefire-reports/TEST-*.xml
-          target/failsafe-reports/TEST-*.xml
-        reporter: java-junit
-        fail-on-error: false
-        fail-on-empty: false
+      - name: Publish JUnit Results
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: JUnit Test Results
+          path: |
+            target/surefire-reports/TEST-*.xml
+            target/failsafe-reports/TEST-*.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false
 
-    - name: Upload Test and Coverage Reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ASPICE-Test-Reports
-        path: |
-          target/surefire-reports/
-          target/failsafe-reports/
-          target/site/jacoco/
-          target/classes/
-          target/test-classes/
-        if-no-files-found: warn
-        retention-days: 90
-
+      - name: Upload Test and Coverage Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASPICE-Test-Reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            target/site/jacoco/
+            target/classes/
+            target/test-classes/
+          if-no-files-found: warn
+          retention-days: 90
 
 
   # ==========================================
@@ -146,7 +154,14 @@ unit-test:
         uses: actions/download-artifact@v4
         with:
           name: ASPICE-Test-Reports
-          path: .
+          path: target
+
+      - name: Verify JaCoCo Report
+        run: |
+          test -f target/site/jacoco/jacoco.xml || {
+            echo "JaCoCo XML report not found."
+            exit 1
+          }
 
       - name: SonarQube Analysis
         env:
@@ -221,11 +236,9 @@ unit-test:
           IMAGE="${IMAGE_NAME,,}"
           TAG="${GITHUB_SHA}"
 
-          docker build \
-            -t "$IMAGE:$TAG" .
+          docker build -t "$IMAGE:$TAG" .
 
-          docker save "$IMAGE:$TAG" \
-            -o aspice-docker-image.tar
+          docker save "$IMAGE:$TAG" -o aspice-docker-image.tar
 
       - name: Upload Docker Image
         uses: actions/upload-artifact@v4
@@ -252,14 +265,18 @@ unit-test:
           path: image
 
       - name: Load Docker Image
+        run: docker load -i image/aspice-docker-image.tar
+
+      - name: Set Lowercase Image Name
+        id: image-name
         run: |
-          docker load -i image/aspice-docker-image.tar
+          echo "image=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
 
       - name: Trivy Image Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          image-ref: ${{ steps.image-name.outputs.image }}:${{ github.sha }}
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -345,6 +362,7 @@ unit-test:
 
       - name: Download All Evidence
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: ASPICE-*
           path: evidence
@@ -364,6 +382,14 @@ unit-test:
 
       - name: Publish ASPICE Report in GitHub UI
         if: always()
+        env:
+          BUILD_RESULT: ${{ needs.maven-build.result }}
+          TEST_RESULT: ${{ needs.unit-test.result }}
+          SONAR_RESULT: ${{ needs.sonarqube.result }}
+          TRIVY_FS_RESULT: ${{ needs.trivy-fs.result }}
+          DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
+          TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
+          DOCKER_PUSH_RESULT: ${{ needs.docker-push.result }}
         run: |
           echo "# ASPICE Evidence Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
