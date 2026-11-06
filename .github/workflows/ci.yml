@@ -129,7 +129,7 @@ jobs:
 
 
   # ==========================================
-  # JOB 3: SONARQUBE
+  # JOB 3: SONARCLOUD ANALYSIS
   # ==========================================
 
   sonarqube:
@@ -179,6 +179,42 @@ jobs:
             -Dsonar.token="$SONAR_TOKEN" \
             -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
             -Dsonar.qualitygate.wait=true
+
+      # Download SonarCloud measures and Quality Gate status.
+      # if: always() also allows collection when the Quality Gate fails.
+
+      - name: Download SonarCloud Report Data
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p sonar-evidence
+
+          curl --fail --silent --show-error \
+            -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density" \
+            -o sonar-evidence/sonar-measures.json
+
+          curl --fail --silent --show-error \
+            -u "$SONAR_TOKEN:" \
+            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
+            -o sonar-evidence/sonar-quality-gate.json
+
+          echo "SonarCloud report data downloaded."
+          ls -lh sonar-evidence/
+
+      - name: Upload SonarCloud Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASPICE-Sonar-Reports
+          path: sonar-evidence/
+          if-no-files-found: warn
+          retention-days: 90
 
 
   # ==========================================
@@ -252,7 +288,7 @@ jobs:
 
 
   # ==========================================
-  # JOB 6: TRIVY DOCKER SCAN
+  # JOB 6: TRIVY DOCKER IMAGE SCAN
   # ==========================================
 
   trivy-image:
@@ -363,13 +399,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download All Evidence
+      - name: Verify ASPICE Report Generator
+        run: |
+          python3 --version
+
+          if [ ! -f scripts/generate_aspice_report.py ]; then
+            echo "ERROR: scripts/generate_aspice_report.py not found."
+            exit 1
+          fi
+
+          echo "ASPICE report generator found."
+
+      # Download only the reports needed by the dashboard.
+      # Do not download the Docker image TAR into the evidence directory.
+
+      - name: Download Test and Coverage Evidence
+        if: always()
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          pattern: ASPICE-*
-          path: evidence
+          name: ASPICE-Test-Reports
+          path: evidence/tests
+
+      - name: Download Trivy Evidence
+        if: always()
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: ASPICE-Trivy-*
+          path: evidence/trivy
           merge-multiple: false
+
+      - name: Download SonarCloud Evidence
+        if: always()
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ASPICE-Sonar-Reports
+          path: evidence/sonar
+
+      - name: Display Downloaded Evidence
+        if: always()
+        run: |
+          echo "=== Downloaded ASPICE Evidence ==="
+          find evidence -type f -print || true
 
       - name: Generate ASPICE HTML Report
         env:
@@ -383,7 +456,10 @@ jobs:
         run: |
           python3 scripts/generate_aspice_report.py
 
-      - name: Publish ASPICE Report in GitHub UI
+          echo "=== Generated ASPICE Report ==="
+          ls -lh aspice-report/
+
+      - name: Publish ASPICE Report in GitHub Actions Summary
         if: always()
         env:
           BUILD_RESULT: ${{ needs.maven-build.result }}
@@ -394,19 +470,26 @@ jobs:
           TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
           DOCKER_PUSH_RESULT: ${{ needs.docker-push.result }}
         run: |
-          echo "# ASPICE Evidence Report" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Build: $BUILD_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo "Tests: $TEST_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo "SonarQube: $SONAR_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo "Trivy FS: $TRIVY_FS_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo "Docker Build: $DOCKER_BUILD_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo "Trivy Image: $TRIVY_IMAGE_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          echo "Docker Push: $DOCKER_PUSH_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "# ASPICE Evidence Report"
+            echo ""
+            echo "| CI Stage | Result |"
+            echo "|---|---|"
+            echo "| Maven Build | $BUILD_RESULT |"
+            echo "| Unit Tests and JaCoCo | $TEST_RESULT |"
+            echo "| SonarCloud | $SONAR_RESULT |"
+            echo "| Trivy Filesystem | $TRIVY_FS_RESULT |"
+            echo "| Docker Build | $DOCKER_BUILD_RESULT |"
+            echo "| Trivy Image | $TRIVY_IMAGE_RESULT |"
+            echo "| Docker Push | $DOCKER_PUSH_RESULT |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ -f aspice-report/ASPICE-Report.html ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "HTML report generated. Download the ASPICE report artifact." >> "$GITHUB_STEP_SUMMARY"
+          if [ -f aspice-report/aspice-report.html ]; then
+            echo "ASPICE HTML dashboard generated successfully." >> "$GITHUB_STEP_SUMMARY"
+            echo "Download the ASPICE-Final-Report artifact to view the full dashboard." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "WARNING: aspice-report/aspice-report.html was not generated." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload Final ASPICE Report
