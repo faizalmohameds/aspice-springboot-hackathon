@@ -170,7 +170,7 @@ jobs:
           SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
         run: |
           mvn -B \
-            org.sonarsource.scanner.maven:sonar-maven-plugin:5.3.1.6422:sonar \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
             -Dsonar.token="$SONAR_TOKEN" \
