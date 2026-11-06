@@ -1,47 +1,57 @@
 
-name: Spring Boot ASPICE CI Pipeline
+name: ASPICE Spring Boot CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
   checks: write
+  pull-requests: read
 
 env:
-  JAVA_VERSION: '21'
+  JAVA_VERSION: "21"
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
 
-  # 1. MAVEN BUILD
+  # --------------------------------------------------
+  # JOB 1: MAVEN BUILD
+  # --------------------------------------------------
   maven-build:
     name: 1 - Maven Build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup Java 21
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Maven Package
+      - name: Build application
         run: mvn -B clean package -DskipTests
 
-      - name: Verify JAR
+      - name: Verify packaged JAR
         run: |
-          test -n "$(find target -maxdepth 1 -name '*.jar' -print -quit)"
+          set -e
+          JAR_FILE=$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -n 1)
+          test -n "$JAR_FILE"
+          test -s "$JAR_FILE"
+          echo "Application JAR: $JAR_FILE"
 
-      - name: Upload Application JAR
+      - name: Upload application JAR
         uses: actions/upload-artifact@v4
         with:
           name: ASPICE-Application-JAR
@@ -49,51 +59,39 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-
-  # 2. UNIT TEST AND JACOCO
+  # --------------------------------------------------
+  # JOB 2: UNIT AND INTEGRATION TESTS
+  # --------------------------------------------------
   unit-test:
-    name: 2 - JUnit and JaCoCo
+    name: 2 - Unit and Integration Tests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup Java 21
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Maven Tests and Coverage
+      - name: Run tests and generate coverage
         run: mvn -B clean verify
 
-      - name: Check Test Reports
-        if: always()
-        run: |
-          echo "=== Surefire reports ==="
-          find target/surefire-reports -type f -print || true
-
-          echo "=== Failsafe reports ==="
-          find target/failsafe-reports -type f -print || true
-
-          echo "=== JaCoCo reports ==="
-          find target/site/jacoco -type f -print || true
-
-      - name: Publish JUnit Results
+      - name: Publish test results
         if: always()
         uses: dorny/test-reporter@v2
         with:
-          name: JUnit Test Results
+          name: Maven Test Results
           path: |
-            target/surefire-reports/TEST-*.xml
-            target/failsafe-reports/TEST-*.xml
+            **/surefire-reports/TEST-*.xml
+            **/failsafe-reports/TEST-*.xml
           reporter: java-junit
           fail-on-error: false
-          fail-on-empty: false
 
-      - name: Upload Test and Coverage Reports
+      - name: Upload test and coverage evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -105,46 +103,57 @@ jobs:
             target/classes/
             target/test-classes/
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
-
-  # 3. SONARCLOUD
+  # --------------------------------------------------
+  # JOB 3: SONARCLOUD ANALYSIS
+  # --------------------------------------------------
   sonarqube:
-    name: 3 - SonarCloud Analysis
+    name: 3 - SonarCloud Quality Analysis
     runs-on: ubuntu-latest
-    environment: Dev
     needs: unit-test
+    environment: Dev
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Java 21
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Download Test and Coverage Reports
+      - name: Download test and coverage evidence
         uses: actions/download-artifact@v4
         with:
           name: ASPICE-Test-Reports
           path: target
 
-      - name: Verify JaCoCo Report
+      - name: Verify JaCoCo report
         run: |
-          test -f target/site/jacoco/jacoco.xml
+          if [ ! -s target/site/jacoco/jacoco.xml ]; then
+            echo "::error::JaCoCo XML report not found"
+            exit 1
+          fi
 
-      - name: SonarCloud Analysis
+      - name: Run SonarCloud analysis
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
+          set -e
+
+          test -n "$SONAR_HOST_URL"
+          test -n "$SONAR_ORGANIZATION"
+          test -n "$SONAR_PROJECT_KEY"
+          test -n "$SONAR_TOKEN"
+
           mvn -B \
             org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
             -Dsonar.host.url="$SONAR_HOST_URL" \
@@ -154,56 +163,58 @@ jobs:
             -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
             -Dsonar.qualitygate.wait=true
 
-      - name: Download SonarCloud Measures
+      - name: Download SonarCloud evidence
         if: always()
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          set -euo pipefail
-
           mkdir -p sonar-evidence
 
-          curl --fail --silent --show-error \
-            -u "$SONAR_TOKEN:" \
-            "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density,sqale_index,reliability_rating,security_rating,sqale_rating,ncloc" \
-            -o sonar-evidence/sonar-measures.json
+          if [ -n "$SONAR_HOST_URL" ] && [ -n "$SONAR_PROJECT_KEY" ] && [ -n "$SONAR_TOKEN" ]; then
 
-          curl --fail --silent --show-error \
-            -u "$SONAR_TOKEN:" \
-            "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
-            -o sonar-evidence/sonar-quality-gate.json
+            curl --fail --silent --show-error -u "$SONAR_TOKEN:" \
+              "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density,sqale_index,reliability_rating,security_rating,sqale_rating,ncloc" \
+              -o sonar-evidence/sonar-measures.json \
+              || echo "Warning: Sonar measures unavailable"
 
-          curl --fail --silent --show-error \
-            -u "$SONAR_TOKEN:" \
-            "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&ps=500" \
-            -o sonar-evidence/sonar-issues.json
+            curl --fail --silent --show-error -u "$SONAR_TOKEN:" \
+              "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
+              -o sonar-evidence/sonar-quality-gate.json \
+              || echo "Warning: Sonar quality gate unavailable"
 
-          echo "SonarCloud evidence downloaded."
-          ls -lh sonar-evidence/
+            curl --fail --silent --show-error -u "$SONAR_TOKEN:" \
+              "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&ps=500" \
+              -o sonar-evidence/sonar-issues.json \
+              || echo "Warning: Sonar issues unavailable"
 
-      - name: Upload SonarCloud Reports
+          else
+            echo "SonarCloud secrets unavailable"
+          fi
+
+      - name: Upload SonarCloud evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ASPICE-Sonar-Reports
           path: sonar-evidence/
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
-
-  # 4. TRIVY FILESYSTEM SCAN
+  # --------------------------------------------------
+  # JOB 4: TRIVY FILESYSTEM SCAN
+  # --------------------------------------------------
   trivy-fs:
-    name: 4 - Trivy Filesystem Scan
+    name: 4 - Trivy Filesystem Security Scan
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Scan repository filesystem
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -212,155 +223,147 @@ jobs:
           ignore-unfixed: true
           format: json
           output: trivy-fs-results.json
-          exit-code: '0'
+          exit-code: "0"
 
-      - name: Upload Filesystem Scan Report
+      - name: Upload filesystem scan results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ASPICE-Trivy-Filesystem
           path: trivy-fs-results.json
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
-
-  # 5. DOCKER BUILD
+  # --------------------------------------------------
+  # JOB 5: DOCKER BUILD
+  # --------------------------------------------------
   docker-build:
     name: 5 - Docker Image Build
     runs-on: ubuntu-latest
     needs: maven-build
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Download Application JAR
+      - name: Download application JAR
         uses: actions/download-artifact@v4
         with:
           name: ASPICE-Application-JAR
           path: target
 
-      - name: Docker Build
+      - name: Build Docker image
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          IMAGE="${IMAGE_NAME,,}"
-          TAG="${GITHUB_SHA}"
+          set -e
 
-          docker build -t "$IMAGE:$TAG" .
-          docker save "$IMAGE:$TAG" -o aspice-docker-image.tar
+          IMAGE=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
 
-      - name: Upload Docker Image
+          docker build \
+            --tag "$IMAGE:$IMAGE_TAG" .
+
+          docker save "$IMAGE:$IMAGE_TAG" \
+            -o aspice-docker-image.tar
+
+      - name: Upload Docker image archive
         uses: actions/upload-artifact@v4
         with:
           name: ASPICE-Docker-Image
           path: aspice-docker-image.tar
+          if-no-files-found: error
           retention-days: 2
 
-
-  # 6. TRIVY IMAGE SCAN
+  # --------------------------------------------------
+  # JOB 6: TRIVY IMAGE SCAN
+  # --------------------------------------------------
   trivy-image:
-    name: 6 - Trivy Docker Image Scan
+    name: 6 - Trivy Container Image Scan
     runs-on: ubuntu-latest
     needs: docker-build
 
     steps:
-      - name: Download Docker Image
+      - name: Download Docker image archive
         uses: actions/download-artifact@v4
         with:
           name: ASPICE-Docker-Image
-          path: image
+          path: .
 
-      - name: Load Docker Image
-        run: docker load -i image/aspice-docker-image.tar
+      - name: Load Docker image
+        run: docker load --input aspice-docker-image.tar
 
-      - name: Set Lowercase Image Name
-        id: image-name
-        run: |
-          echo "image=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Trivy Image Scan
-        uses: aquasecurity/trivy-action@v0.36.0
+      - name: Scan Docker image
+        uses: aquasecurity/trivy-action@0.36.0
         with:
-          scan-type: image
-          image-ref: ${{ steps.image-name.outputs.image }}:${{ github.sha }}
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           format: json
           output: trivy-image-results.json
-          exit-code: '0'
+          exit-code: "0"
 
-      - name: Upload Image Scan Report
+      - name: Upload image scan results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ASPICE-Trivy-Image
           path: trivy-image-results.json
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
-
-  # 7. DOCKER PUSH
+  # --------------------------------------------------
+  # JOB 7: PUSH DOCKER IMAGE
+  # --------------------------------------------------
   docker-push:
-    name: 7 - Docker Image Push
+    name: 7 - Push Docker Image to GHCR
     runs-on: ubuntu-latest
-
     needs:
       - docker-build
       - trivy-image
-
-    if: >-
-      github.event_name != 'pull_request' &&
-      needs.docker-build.result == 'success' &&
-      needs.trivy-image.result == 'success'
+    if: github.event_name != 'pull_request'
 
     permissions:
       contents: read
       packages: write
 
-    outputs:
-      image: ${{ steps.push-image.outputs.image }}
-      tag: ${{ steps.push-image.outputs.tag }}
-      digest: ${{ steps.push-image.outputs.digest }}
-
     steps:
-      - name: Download Docker Image
+      - name: Download Docker image archive
         uses: actions/download-artifact@v4
         with:
           name: ASPICE-Docker-Image
-          path: image
+          path: .
 
-      - name: Load Docker Image
-        run: docker load -i image/aspice-docker-image.tar
+      - name: Load Docker image
+        run: docker load --input aspice-docker-image.tar
 
-      - name: Login to GHCR
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push Docker Image
-        id: push-image
+      - name: Push Docker image
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          IMAGE="${IMAGE_NAME,,}"
-          TAG="${GITHUB_SHA}"
+          set -e
 
-          docker push "$IMAGE:$TAG"
+          IMAGE=$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]')
 
-          DIGEST=$(docker inspect \
-            --format='{{index .RepoDigests 0}}' \
-            "$IMAGE:$TAG" | cut -d '@' -f 2)
+          docker push "$IMAGE:$IMAGE_TAG"
 
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Docker image pushed: $IMAGE:$IMAGE_TAG"
 
-
-  # 8. ASPICE REPORT
+  # --------------------------------------------------
+  # JOB 8: GENERATE ASPICE HTML AND JSON REPORT
+  # --------------------------------------------------
   aspice-report:
-    name: 8 - ASPICE Evidence Report
+    name: 8 - Generate ASPICE Evidence Report
     runs-on: ubuntu-latest
-    if: always()
 
     needs:
       - maven-build
@@ -371,92 +374,79 @@ jobs:
       - trivy-image
       - docker-push
 
+    if: always()
+
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.12"
 
-      - name: Download Test and Coverage Evidence
+      - name: Download test reports
         if: always()
-        uses: actions/download-artifact@v4
         continue-on-error: true
+        uses: actions/download-artifact@v4
         with:
           name: ASPICE-Test-Reports
           path: evidence/tests
 
-      - name: Download Trivy Evidence
+      - name: Download SonarCloud reports
         if: always()
-        uses: actions/download-artifact@v4
         continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ASPICE-Sonar-Reports
+          path: evidence/sonar
+
+      - name: Download Trivy reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
         with:
           pattern: ASPICE-Trivy-*
           path: evidence/trivy
           merge-multiple: false
 
-      - name: Download SonarCloud Evidence
-        if: always()
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: ASPICE-Sonar-Reports
-          path: evidence/sonar
-
-      - name: Display Evidence
+      - name: Capture pipeline results
         if: always()
         run: |
-          find evidence -type f -print || true
+          {
+            echo "BUILD_RESULT=${{ needs.maven-build.result }}"
+            echo "TEST_RESULT=${{ needs.unit-test.result }}"
+            echo "SONAR_RESULT=${{ needs.sonarqube.result }}"
+            echo "TRIVY_FS_RESULT=${{ needs.trivy-fs.result }}"
+            echo "DOCKER_BUILD_RESULT=${{ needs.docker-build.result }}"
+            echo "TRIVY_IMAGE_RESULT=${{ needs.trivy-image.result }}"
+            echo "DOCKER_PUSH_RESULT=${{ needs.docker-push.result }}"
+            echo "DOCKER_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "DOCKER_TAG=${GITHUB_SHA}"
+            echo "GITHUB_RUN_URL=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "GITHUB_COMMIT_URL=https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+          } >> "$GITHUB_ENV"
 
-      - name: Generate ASPICE Report
-        env:
-          BUILD_RESULT: ${{ needs.maven-build.result }}
-          TEST_RESULT: ${{ needs.unit-test.result }}
-          SONAR_RESULT: ${{ needs.sonarqube.result }}
-          TRIVY_FS_RESULT: ${{ needs.trivy-fs.result }}
-          DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
-          TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
-          DOCKER_PUSH_RESULT: ${{ needs.docker-push.result }}
-
-          DOCKER_IMAGE: ${{ needs.docker-push.outputs.image || 'ghcr.io/${{ github.repository }}' }}
-          DOCKER_TAG: ${{ needs.docker-push.outputs.tag || github.sha }}
-          DOCKER_DIGEST: ${{ needs.docker-push.outputs.digest || 'Not available' }}
-
+      - name: Validate Python report generator
         run: |
-          python3 -m py_compile scripts/generate_aspice_report.py
-          python3 scripts/generate_aspice_report.py
+          python -m py_compile scripts/generate_aspice_report.py
+
+      - name: Generate ASPICE reports
+        run: |
+          set -e
+
+          python scripts/generate_aspice_report.py
 
           test -s aspice-report/aspice-report.html
           test -s aspice-report/aspice-report.json
 
-      - name: Publish ASPICE Summary
-        if: always()
-        env:
-          BUILD_RESULT: ${{ needs.maven-build.result }}
-          TEST_RESULT: ${{ needs.unit-test.result }}
-          SONAR_RESULT: ${{ needs.sonarqube.result }}
-          TRIVY_FS_RESULT: ${{ needs.trivy-fs.result }}
-          DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
-          TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
-          DOCKER_PUSH_RESULT: ${{ needs.docker-push.result }}
-        run: |
-          {
-            echo "# ASPICE Evidence Report"
-            echo ""
-            echo "| CI Stage | Result |"
-            echo "|---|---|"
-            echo "| Maven Build | $BUILD_RESULT |"
-            echo "| Unit Tests | $TEST_RESULT |"
-            echo "| SonarCloud | $SONAR_RESULT |"
-            echo "| Trivy Filesystem | $TRIVY_FS_RESULT |"
-            echo "| Docker Build | $DOCKER_BUILD_RESULT |"
-            echo "| Trivy Image | $TRIVY_IMAGE_RESULT |"
-            echo "| Docker Push | $DOCKER_PUSH_RESULT |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "ASPICE reports generated successfully"
 
-      - name: Upload Final ASPICE Report
+      - name: Prepare GitHub Pages landing page
+        run: |
+          cp aspice-report/aspice-report.html aspice-report/index.html
+
+      - name: Upload final ASPICE report and evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -466,3 +456,66 @@ jobs:
             evidence/
           if-no-files-found: warn
           retention-days: 90
+
+      - name: Upload HTML report for GitHub Pages
+        if: success() && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: aspice-report
+
+  # --------------------------------------------------
+  # JOB 9: DEPLOY HTML REPORT AND VALIDATE DOWNLOAD
+  # --------------------------------------------------
+  deploy-aspice-report:
+    name: 9 - Deploy ASPICE HTML Report
+    runs-on: ubuntu-latest
+
+    needs:
+      - aspice-report
+
+    if: github.event_name != 'pull_request' && needs.aspice-report.result == 'success'
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy report to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Download deployed HTML and validate
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          set -e
+
+          test -n "$PAGE_URL"
+
+          curl --fail --location \
+            --retry 10 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            "$PAGE_URL" \
+            -o downloaded-aspice-report.html
+
+          test -s downloaded-aspice-report.html
+
+          grep -qi "ASPICE" downloaded-aspice-report.html
+
+          echo "ASPICE HTML downloaded successfully"
+          echo "HTML validation passed"
+          echo "Report URL: $PAGE_URL"
+
+      - name: Upload downloaded HTML validation copy
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASPICE-Deployed-HTML-Validation
+          path: downloaded-aspice-report.html
+          if-no-files-found: warn
+          retention-days: 30
