@@ -466,6 +466,7 @@ jobs:
             evidence/
           if-no-files-found: warn
           retention-days: 90
+  
   # --------------------------------------------------
   # JOB 9: DEPLOY ASPICE HTML REPORT
   # --------------------------------------------------
@@ -488,32 +489,59 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      # Step 1: Download existing ASPICE artifact
       - name: Download ASPICE report artifact
         uses: actions/download-artifact@v4
         with:
           name: ASPICE-Final-Report
-          path: aspice-report
+          path: downloaded-artifact
 
-      - name: Verify HTML report
+      # Step 2: Display downloaded structure
+      - name: Verify downloaded files
         run: |
           set -e
 
-          test -s aspice-report/aspice-report.html
+          echo "Downloaded artifact structure:"
+          find downloaded-artifact -type f -print
 
-          cp aspice-report/aspice-report.html aspice-report/index.html
+      # Step 3: Locate HTML and prepare Pages directory
+      - name: Prepare HTML for deployment
+        run: |
+          set -e
 
-          echo "ASPICE HTML report verified"
+          HTML_FILE=$(find downloaded-artifact \
+            -type f \
+            -name "aspice-report.html" | head -n 1)
 
-      - name: Upload report to GitHub Pages
+          if [ -z "$HTML_FILE" ]; then
+            echo "::error::ASPICE HTML report not found"
+            exit 1
+          fi
+
+          test -s "$HTML_FILE"
+
+          mkdir -p pages-site
+
+          cp "$HTML_FILE" pages-site/index.html
+          cp "$HTML_FILE" pages-site/aspice-report.html
+
+          echo "HTML report successfully prepared"
+
+          ls -lh pages-site/
+
+      # Step 4: Upload HTML to GitHub Pages
+      - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: aspice-report
+          path: pages-site
 
+      # Step 5: Deploy
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: Download deployed HTML and validate
+      # Step 6: Download deployed HTML and validate
+      - name: Download and validate deployed HTML
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
@@ -532,8 +560,10 @@ jobs:
 
           grep -qi "ASPICE" downloaded-aspice-report.html
 
-          echo "HTML download and validation successful"
+          echo "ASPICE HTML download successful"
+          echo "ASPICE HTML validation successful"
 
+      # Step 7: Save downloaded copy
       - name: Upload downloaded HTML validation copy
         if: always()
         uses: actions/upload-artifact@v4
