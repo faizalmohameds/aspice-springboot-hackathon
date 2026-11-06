@@ -135,6 +135,7 @@ jobs:
   sonarqube:
     name: 3 - SonarQube Analysis
     runs-on: ubuntu-latest
+    environment: Dev
     needs: unit-test
 
     steps:
