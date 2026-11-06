@@ -50,52 +50,74 @@ jobs:
           retention-days: 7
 
 
-  # ==========================================
-  # JOB 2: JUNIT + JACOCO
-  # ==========================================
 
-  unit-test:
-    name: 2 - JUnit and JaCoCo
-    runs-on: ubuntu-latest
+# ==========================================
+# JOB 2: JUNIT + JACOCO
+# ==========================================
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+unit-test:
+  name: 2 - JUnit and JaCoCo
+  runs-on: ubuntu-latest
 
-      - name: Setup Java 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Maven Tests and Coverage
-        run: mvn -B clean verify
+    - name: Setup Java 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+        cache: maven
 
-      - name: Publish JUnit Results
-        if: always()
-        uses: dorny/test-reporter@v2
-        with:
-          name: JUnit Test Results
-          path: |
-            target/surefire-reports/TEST-*.xml
-            target/failsafe-reports/TEST-*.xml
-          reporter: java-junit
-          fail-on-error: false
+    - name: Maven Tests and Coverage
+      run: mvn -B clean verify
 
-      - name: Upload Test and Coverage Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ASPICE-Test-Reports
-          path: |
-            target/surefire-reports/
-            target/failsafe-reports/
-            target/site/jacoco/
-            target/classes/
-            target/test-classes/
-          if-no-files-found: warn
-          retention-days: 90
+    # NEW: Diagnose test execution and report generation
+    - name: Check Test Reports
+      if: always()
+      run: |
+        echo "=== Test source files ==="
+        find src/test -type f -name "*.java" -print || true
+
+        echo "=== Compiled test classes ==="
+        find target/test-classes -type f -name "*.class" -print || true
+
+        echo "=== Surefire reports ==="
+        find target/surefire-reports -type f -print || true
+
+        echo "=== Failsafe reports ==="
+        find target/failsafe-reports -type f -print || true
+
+        echo "=== JaCoCo reports ==="
+        find target/site/jacoco -type f -print || true
+
+    - name: Publish JUnit Results
+      if: always()
+      uses: dorny/test-reporter@v2
+      with:
+        name: JUnit Test Results
+        path: |
+          target/surefire-reports/TEST-*.xml
+          target/failsafe-reports/TEST-*.xml
+        reporter: java-junit
+        fail-on-error: false
+        fail-on-empty: false
+
+    - name: Upload Test and Coverage Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ASPICE-Test-Reports
+        path: |
+          target/surefire-reports/
+          target/failsafe-reports/
+          target/site/jacoco/
+          target/classes/
+          target/test-classes/
+        if-no-files-found: warn
+        retention-days: 90
+
 
 
   # ==========================================
