@@ -3,134 +3,456 @@ name: Spring Boot ASPICE CI Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
 
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
   workflow_dispatch:
 
 permissions:
   contents: read
+  checks: write
   security-events: write
+  packages: write
+
+env:
+  JAVA_VERSION: '21'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
+
   aspice-evidence:
+
+    name: Build, Scan and ASPICE Evidence
 
     runs-on: ubuntu-latest
 
     steps:
 
-      # Checkout
-      - name: Checkout source
+      # ------------------------------------------------
+      # 1. CHECKOUT
+      # ------------------------------------------------
+
+      - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # Java 21
-      - name: Setup Java
+      # ------------------------------------------------
+      # 2. JAVA 21 AND MAVEN
+      # ------------------------------------------------
+
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
-      # Maven build and test
-      - name: Maven Build and Tests
-        run: |
-          mvn clean verify
+      # ------------------------------------------------
+      # 3. MAVEN BUILD AND JUNIT TESTS
+      # ------------------------------------------------
 
-      # Publish JUnit report
-      - name: Publish JUnit results
+      - name: Maven Clean Build and Tests
+        id: maven
+        run: |
+          mvn -B clean verify
+
+      # ------------------------------------------------
+      # 4. JUNIT REPORT
+      # ------------------------------------------------
+
+      - name: Publish JUnit Test Results
         if: always()
         uses: dorny/test-reporter@v2
         with:
           name: JUnit Test Results
-          path: target/surefire-reports/*.xml
+          path: |
+            target/surefire-reports/*.xml
+            target/failsafe-reports/*.xml
           reporter: java-junit
           fail-on-error: false
 
-      # SonarQube
-      - name: SonarQube Analysis
-        if: success()
+      # ------------------------------------------------
+      # 5. SONARQUBE ANALYSIS
+      # ------------------------------------------------
+
+      - name: SonarQube Code Analysis
+        id: sonar
+        if: always() && steps.maven.outcome == 'success'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
         run: |
-          mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.3.1.6422:sonar \
-            -Dsonar.host.url=$SONAR_HOST_URL \
-            -Dsonar.token=$SONAR_TOKEN \
+          mvn -B \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:5.3.1.6422:sonar \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+            -Dsonar.token="$SONAR_TOKEN" \
             -Dsonar.qualitygate.wait=true
 
-      # Trivy filesystem scan
+      # ------------------------------------------------
+      # 6. TRIVY FILESYSTEM / DEPENDENCY SCAN
+      # ------------------------------------------------
+
       - name: Trivy Filesystem Scan
+        id: trivy-fs
         if: always()
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           scanners: vuln,misconfig,secret
           severity: HIGH,CRITICAL
-          format: sarif
-          output: trivy-fs-results.sarif
+          ignore-unfixed: true
+          format: json
+          output: trivy-fs-results.json
           exit-code: '0'
 
-      # Docker build
-      - name: Docker Build
-        if: success()
-        run: |
-          docker build -t aspice-demo:${{ github.sha }} .
+      # ------------------------------------------------
+      # 7. DOCKER IMAGE BUILD
+      # ------------------------------------------------
 
-      # Docker image scan
-      - name: Trivy Docker Scan
-        if: success()
-        uses: aquasecurity/trivy-action@0.36.0
+      - name: Docker Image Build
+        id: docker-build
+        if: always() && steps.maven.outcome == 'success'
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          TAG="${GITHUB_SHA}"
+
+          docker build \
+            -t "$IMAGE:$TAG" .
+
+          echo "image=$IMAGE:$TAG" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------
+      # 8. TRIVY DOCKER IMAGE SCAN
+      # ------------------------------------------------
+
+      - name: Trivy Docker Image Scan
+        id: trivy-image
+        if: always() && steps.docker-build.outcome == 'success'
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
-          image-ref: aspice-demo:${{ github.sha }}
+          image-ref: ${{ steps.docker-build.outputs.image }}
           scanners: vuln
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           format: json
           output: trivy-image-results.json
           exit-code: '0'
 
-      # Upload Trivy results
-      - name: Publish Trivy SARIF
-        if: always() && hashFiles('trivy-fs-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-fs-results.sarif
+      # ------------------------------------------------
+      # 9. DOCKER LOGIN TO GHCR
+      # ------------------------------------------------
 
-      # Collect evidence metadata
-      - name: Generate ASPICE metadata
+      - name: Login to GitHub Container Registry
+        if: >-
+          always() &&
+          steps.docker-build.outcome == 'success' &&
+          steps.trivy-image.outcome == 'success' &&
+          github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------
+      # 10. PUSH DOCKER IMAGE
+      # ------------------------------------------------
+
+      - name: Push Docker Image
+        if: >-
+          always() &&
+          steps.docker-build.outcome == 'success' &&
+          steps.trivy-image.outcome == 'success' &&
+          github.event_name != 'pull_request'
+        run: |
+          docker push "${{ steps.docker-build.outputs.image }}"
+
+      # ------------------------------------------------
+      # 11. GENERATE ASPICE REPORT
+      # ------------------------------------------------
+
+      - name: Generate ASPICE Evidence Report
         if: always()
+        env:
+          BUILD_STATUS: ${{ steps.maven.outcome }}
+          SONAR_STATUS: ${{ steps.sonar.outcome }}
+          TRIVY_FS_STATUS: ${{ steps.trivy-fs.outcome }}
+          DOCKER_STATUS: ${{ steps.docker-build.outcome }}
+          TRIVY_IMAGE_STATUS: ${{ steps.trivy-image.outcome }}
+          IMAGE_PUSH_STATUS: ${{ steps.docker-push.outcome }}
+          IMAGE_REF: ${{ steps.docker-build.outputs.image }}
+          SONAR_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
         run: |
           mkdir -p aspice-report
 
-          echo "Project: Spring Boot ASPICE" \
-            > aspice-report/build-info.txt
+          python3 <<'PY'
+          import os
+          import json
+          import glob
+          import xml.etree.ElementTree as ET
+          from html import escape
+          from datetime import datetime, timezone
 
-          echo "Commit: $GITHUB_SHA" \
-            >> aspice-report/build-info.txt
+          def status(name):
+              return os.getenv(name, "not-run")
 
-          echo "Build: $GITHUB_RUN_NUMBER" \
-            >> aspice-report/build-info.txt
+          # JUnit statistics
+          total = passed = failed = skipped = 0
 
-          echo "Branch: $GITHUB_REF_NAME" \
-            >> aspice-report/build-info.txt
+          for filename in (
+              glob.glob("target/surefire-reports/TEST-*.xml")
+              + glob.glob("target/failsafe-reports/TEST-*.xml")
+          ):
+              try:
+                  root = ET.parse(filename).getroot()
+                  total += int(root.get("tests", 0))
+                  failed += int(root.get("failures", 0))
+                  failed += int(root.get("errors", 0))
+                  skipped += int(root.get("skipped", 0))
+              except Exception:
+                  pass
 
-      # Publish reports
-      - name: Upload ASPICE Evidence
+          passed = max(0, total - failed - skipped)
+
+          # JaCoCo coverage
+          line_covered = line_missed = 0
+
+          try:
+              root = ET.parse(
+                  "target/site/jacoco/jacoco.xml"
+              ).getroot()
+
+              for counter in root.findall("counter"):
+                  if counter.get("type") == "LINE":
+                      line_covered = int(counter.get("covered", 0))
+                      line_missed = int(counter.get("missed", 0))
+                      break
+          except Exception:
+              pass
+
+          line_total = line_covered + line_missed
+          coverage = (
+              round(line_covered * 100 / line_total, 2)
+              if line_total else None
+          )
+
+          # Trivy vulnerability statistics
+          def trivy_count(filename):
+              counts = {
+                  "CRITICAL": 0,
+                  "HIGH": 0
+              }
+
+              try:
+                  with open(filename) as file:
+                      data = json.load(file)
+
+                  for result in data.get("Results") or []:
+                      for vuln in result.get("Vulnerabilities") or []:
+                          severity = vuln.get("Severity", "")
+                          if severity in counts:
+                              counts[severity] += 1
+              except Exception:
+                  pass
+
+              return counts
+
+          fs = trivy_count("trivy-fs-results.json")
+          image = trivy_count("trivy-image-results.json")
+
+          rows = [
+              ("Maven Build and Tests", status("BUILD_STATUS")),
+              ("SonarQube Analysis", status("SONAR_STATUS")),
+              ("Trivy Filesystem Scan", status("TRIVY_FS_STATUS")),
+              ("Docker Image Build", status("DOCKER_STATUS")),
+              ("Trivy Image Scan", status("TRIVY_IMAGE_STATUS")),
+              ("Docker Image Push", status("IMAGE_PUSH_STATUS"))
+          ]
+
+          def badge(value):
+              return {
+                  "success": "SUCCESS",
+                  "failure": "FAILED",
+                  "skipped": "SKIPPED"
+              }.get(value, value.upper())
+
+          sonar_link = (
+              os.getenv("SONAR_URL", "").rstrip("/")
+              + "/dashboard?id="
+              + os.getenv("SONAR_PROJECT_KEY", "")
+          )
+
+          timestamp = datetime.now(timezone.utc).strftime(
+              "%Y-%m-%d %H:%M UTC"
+          )
+
+          html_rows = "".join(
+              "<tr><td>" + escape(name) +
+              "</td><td>" + escape(badge(value)) +
+              "</td></tr>"
+              for name, value in rows
+          )
+
+          coverage_text = (
+              str(coverage) + "%"
+              if coverage is not None else "Not available"
+          )
+
+          report = f"""<!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset="UTF-8">
+          <title>ASPICE Evidence Report</title>
+          <style>
+          body {{ font-family: Arial; margin: 30px; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          td, th {{ border: 1px solid #ddd; padding: 10px; }}
+          th {{ background: #eee; }}
+          .metric {{ display: inline-block; padding: 15px;
+                     margin: 8px; background: #eef2f7; }}
+          </style>
+          </head>
+          <body>
+          <h1>ASPICE CI/CD Evidence Report</h1>
+          <p>Project: {escape(os.getenv("GITHUB_REPOSITORY", ""))}</p>
+          <p>Commit: {escape(os.getenv("GITHUB_SHA", ""))}</p>
+          <p>Branch: {escape(os.getenv("GITHUB_REF_NAME", ""))}</p>
+          <p>Build: {escape(os.getenv("GITHUB_RUN_NUMBER", ""))}</p>
+          <p>Generated: {timestamp}</p>
+
+          <h2>Pipeline Status</h2>
+          <table>
+          <tr><th>Activity</th><th>Status</th></tr>
+          {html_rows}
+          </table>
+
+          <h2>JUnit Test Results</h2>
+          <div class="metric">Total: {total}</div>
+          <div class="metric">Passed: {passed}</div>
+          <div class="metric">Failed: {failed}</div>
+          <div class="metric">Skipped: {skipped}</div>
+
+          <h2>JaCoCo Coverage</h2>
+          <div class="metric">Line Coverage: {coverage_text}</div>
+
+          <h2>Trivy Filesystem Findings</h2>
+          <p>Critical: {fs["CRITICAL"]} |
+             High: {fs["HIGH"]}</p>
+
+          <h2>Trivy Docker Image Findings</h2>
+          <p>Critical: {image["CRITICAL"]} |
+             High: {image["HIGH"]}</p>
+
+          <h2>SonarQube</h2>
+          <p><a href="{escape(sonar_link, quote=True)}">
+          Open SonarQube Dashboard</a></p>
+
+          <h2>Docker Image</h2>
+          <p>{escape(os.getenv("IMAGE_REF", "Not built"))}</p>
+
+          <h2>ASPICE Evidence Mapping</h2>
+          <table>
+          <tr><th>Process</th><th>Evidence Reference</th></tr>
+          <tr><td>SWE.1</td><td>Requirement traceability records</td></tr>
+          <tr><td>SWE.2</td><td>Architecture documentation</td></tr>
+          <tr><td>SWE.3</td><td>Code and pull request history</td></tr>
+          <tr><td>SWE.4</td><td>JUnit and JaCoCo reports</td></tr>
+          <tr><td>SWE.5</td><td>Integration test reports</td></tr>
+          <tr><td>SWE.6</td><td>Qualification test evidence</td></tr>
+          <tr><td>SUP.8</td><td>Git and build history</td></tr>
+          <tr><td>SUP.9</td><td>Defect tracking references</td></tr>
+          <tr><td>SUP.10</td><td>Change request references</td></tr>
+          </table>
+
+          <p>Note: Evidence references are not an ASPICE
+          compliance or capability-level assessment.</p>
+          </body>
+          </html>
+          """
+
+          with open(
+              "aspice-report/ASPICE-Report.html", "w"
+          ) as file:
+              file.write(report)
+
+          # Build GitHub Actions summary
+          summary = [
+              "# ASPICE CI/CD Evidence Report",
+              "",
+              f"**Project:** {os.getenv('GITHUB_REPOSITORY')}",
+              f"**Commit:** `{os.getenv('GITHUB_SHA')}`",
+              f"**Build:** {os.getenv('GITHUB_RUN_NUMBER')}",
+              "",
+              "## Pipeline Results",
+              "",
+              "| Activity | Status |",
+              "|---|---|"
+          ]
+
+          for name, value in rows:
+              summary.append(f"| {name} | {badge(value)} |")
+
+          summary += [
+              "",
+              "## JUnit Results",
+              f"- Total: {total}",
+              f"- Passed: {passed}",
+              f"- Failed: {failed}",
+              f"- Skipped: {skipped}",
+              "",
+              "## JaCoCo Coverage",
+              f"- Line coverage: {coverage_text}",
+              "",
+              "## Trivy Findings",
+              f"- Filesystem: Critical {fs['CRITICAL']}, "
+              f"High {fs['HIGH']}",
+              f"- Docker image: Critical {image['CRITICAL']}, "
+              f"High {image['HIGH']}",
+              "",
+              "## SonarQube",
+              f"[Open SonarQube Dashboard]({sonar_link})",
+              "",
+              "## ASPICE Evidence",
+              "SWE.1, SWE.2, SWE.3, SWE.4, SWE.5, SWE.6, "
+              "SUP.8, SUP.9 and SUP.10 evidence references.",
+              "",
+              "> Evidence collection does not itself establish "
+              "ASPICE compliance."
+          ]
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as file:
+              file.write("\n".join(summary) + "\n")
+
+          print("ASPICE HTML report generated successfully.")
+          PY
+
+      # ------------------------------------------------
+      # 12. PUBLISH ALL REPORTS
+      # ------------------------------------------------
+
+      - name: Upload ASPICE Evidence Package
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ASPICE-Evidence-Report
+          name: ASPICE-Evidence-${{ github.run_number }}
           path: |
+            aspice-report/
             target/surefire-reports/
             target/failsafe-reports/
             target/site/jacoco/
-            trivy-fs-results.sarif
+            target/site/
+            trivy-fs-results.json
             trivy-image-results.json
-            aspice-report/
           retention-days: 90
           if-no-files-found: warn
