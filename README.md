@@ -13,7 +13,10 @@ mvn spring-boot:run
 
 Try:
 - `GET http://localhost:8080/api/status`
+- `GET http://localhost:8080/api/health` — returns the application health status as JSON.
 - `GET http://localhost:8080/actuator/health`
+
+The `/api/health` endpoint is a GET request with no request body. It returns `application`, `status`, and an ISO-8601 UTC `timestamp`. The existing `/api/status` endpoint remains available. See `docs/requirements/REQ-API-001.md` for the request and response contract.
 
 ## Build and run with Docker
 
