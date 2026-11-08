@@ -564,7 +564,7 @@ jobs:
     needs:
       - aspice-report
 
-    if: github.event_name != 'pull_request' && needs.aspice-report.result == 'success'
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.aspice-report.result == 'success' }}
 
     permissions:
       pages: write
