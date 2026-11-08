@@ -24,11 +24,14 @@ docker run --rm -p 8080:8080 aspice-demo:local
 
 ## GitHub Actions
 
-The workflow at `.github/workflows/ci.yml`:
-1. Builds and tests the application on pull requests and pushes to `main`.
-2. Uploads JUnit/Surefire test reports as a workflow artifact.
-3. Builds a Docker image and fails the pipeline for HIGH/CRITICAL Trivy findings (unfixed findings are ignored).
-4. Publishes the image to GitHub Container Registry (GHCR) only after a successful `main` push.
+The workflow at `.github/workflows/ci.yml` also provides:
+
+- A pull request traceability gate: include a registered requirement ID (for example `REQ-CI-001`) in the PR title or description. The ID must have a matching Markdown record under `docs/requirements/`.
+- A CycloneDX software bill of materials (SBOM), saved as a 90-day workflow artifact.
+- Maven build and JUnit/JaCoCo verification reports.
+- SonarCloud quality analysis and Trivy filesystem and image scan evidence.
+- An ASPICE evidence report and HTML deployment to GitHub Pages.
+- A Docker image published to GHCR after the image scan on non-PR runs.
 
 Push this project to a GitHub repository with its default branch named `main`. No personal access token is needed for GHCR when the workflow's `GITHUB_TOKEN` has package write permission. Depending on repository/org package settings, you may need to make the package visible or link it to the repository.
 
@@ -45,6 +48,6 @@ This is an engineering workflow example, **not an ASPICE compliance claim or cer
 | Release / deployment package | Container image published to GHCR after CI passes |
 | Vulnerability management | Trivy image scan output and pipeline gate |
 
-## Suggested hackathon extension
+## Requirement traceability demonstration
 
-Add a `REQ-001` work item for the status endpoint, reference it in the pull request, add a corresponding test, and show the GitHub Actions run as objective evidence that the change was built and verified.
+`docs/requirements/REQ-CI-001.md` defines the pull request traceability requirement and acceptance criteria. Reference the ID in a pull request and use the traceability job result, test reports, SBOM, security scans, and generated report as objective evidence. This is an engineering workflow example, not an ASPICE compliance claim or certification.

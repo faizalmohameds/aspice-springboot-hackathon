@@ -18,6 +18,65 @@ env:
 
 jobs:
 
+  # 0. REQUIREMENT TRACEABILITY
+  requirement-traceability:
+    name: 0 - Requirement Traceability
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check pull request requirement IDs
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          text="$PR_TITLE $PR_BODY"
+          mapfile -t requirement_ids < <(printf '%s' "$text" | grep -oE 'REQ-[A-Z]+-[0-9]+' | sort -u || true)
+
+          if [ "${#requirement_ids[@]}" -eq 0 ]; then
+            echo "::error::Add a registered requirement ID (for example REQ-CI-001) to the pull request title or description."
+            exit 1
+          fi
+
+          for requirement_id in "${requirement_ids[@]}"; do
+            if [ ! -s "docs/requirements/${requirement_id}.md" ]; then
+              echo "::error::No requirement record found at docs/requirements/${requirement_id}.md"
+              exit 1
+            fi
+            echo "Verified ${requirement_id}"
+          done
+
+  # SOFTWARE BILL OF MATERIALS
+  dependency-sbom:
+    name: Software Bill of Materials
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate CycloneDX SBOM
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: aspice-sbom.cdx.json
+          exit-code: '0'
+
+      - name: Upload SBOM evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ASPICE-Software-Bill-of-Materials
+          path: aspice-sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
   # 1. MAVEN BUILD
   maven-build:
     name: 1 - Maven Build
