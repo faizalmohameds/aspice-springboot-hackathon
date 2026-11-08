@@ -85,6 +85,7 @@ def parse_pipeline():
         ),
 
         "jobs": {
+            "Requirement Traceability": env("REQUIREMENT_TRACE_RESULT"),
             "Maven Build": env("BUILD_RESULT"),
             "Unit Test": env("TEST_RESULT"),
             "SonarCloud": env("SONAR_RESULT"),
@@ -93,6 +94,20 @@ def parse_pipeline():
             "Docker Build": env("DOCKER_BUILD_RESULT"),
             "Trivy Image": env("TRIVY_IMAGE_RESULT"),
             "Docker Push": env("DOCKER_PUSH_RESULT")
+        },
+
+        "requirements": {
+            "traceability_status": env("REQUIREMENT_TRACE_RESULT"),
+            "ids": [
+                item.strip()
+                for item in os.getenv("REQUIREMENT_IDS", "").split(",")
+                if item.strip()
+            ],
+            "check_description": (
+                "For pull requests, confirms at least one REQ-<AREA>-<NUMBER> "
+                "identifier appears in the title or description and that each "
+                "identifier has a non-empty docs/requirements/<ID>.md record."
+            )
         }
     }
 
@@ -965,6 +980,14 @@ footer {{ text-align: center; padding: 20px; color: #64748b; }}
 </section>
 
 <section>
+<h2>Requirement traceability</h2>
+<p>{esc(data['requirements']['check_description'])}</p>
+<p><b>Job result:</b> <span class="pill {status_class(data['requirements']['traceability_status'])}">{esc(data['requirements']['traceability_status'])}</span></p>
+<p><b>Requirements verified:</b> {esc(', '.join(data['requirements']['ids']) if data['requirements']['ids'] else 'Not available (the check only runs on pull requests)')}</p>
+<p class="muted">This is a lightweight ID-to-document presence check. It does not assess requirement completeness, implementation correctness, or test coverage.</p>
+</section>
+
+<section>
 <h2>JUnit test evidence</h2>
 <div class="grid">
 <div class="metric"><span>Total</span><strong>{tests['total']}</strong></div>
@@ -1052,7 +1075,8 @@ Scan scope: workflow filters HIGH and CRITICAL severities and ignores unfixed vu
 <tr><td>Security analysis</td><td>Trivy filesystem and image findings</td><td>Evidence of configured security scans</td></tr>
 <tr><td>Software component inventory</td><td>CycloneDX SBOM with component names and versions</td><td>Identifies third-party and software components included in the build</td></tr>
 <tr><td>Deployment package</td><td>Docker image tag and digest</td><td>Identifies the produced container image</td></tr>
-<tr><td>Traceability</td><td>Repository, commit and workflow run</td><td>Links evidence to source revision and CI execution</td></tr>
+<tr><td>Requirement traceability</td><td>Pull request check result and verified requirement IDs</td><td>Links the change to a registered requirement record</td></tr>
+<tr><td>CI execution traceability</td><td>Repository, commit and workflow run</td><td>Links evidence to source revision and CI execution</td></tr>
 </tbody>
 </table>
 </div>
