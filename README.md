@@ -27,7 +27,7 @@ docker run --rm -p 8080:8080 aspice-demo:local
 The workflow at `.github/workflows/ci.yml` also provides:
 
 - A pull request traceability gate: include a registered requirement ID (for example `REQ-CI-001`) in the PR title or description. The ID must have a matching Markdown record under `docs/requirements/`.
-- A CycloneDX software bill of materials (SBOM), saved as a 90-day workflow artifact.
+- A CycloneDX software bill of materials (SBOM), saved as a 90-day workflow artifact and summarized in the final ASPICE report.
 - Maven build and JUnit/JaCoCo verification reports.
 - SonarCloud quality analysis and Trivy filesystem and image scan evidence.
 - An ASPICE evidence report and HTML deployment to GitHub Pages.

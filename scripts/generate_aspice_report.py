@@ -88,6 +88,7 @@ def parse_pipeline():
             "Maven Build": env("BUILD_RESULT"),
             "Unit Test": env("TEST_RESULT"),
             "SonarCloud": env("SONAR_RESULT"),
+            "Software Bill of Materials": env("SBOM_RESULT"),
             "Trivy Filesystem": env("TRIVY_FS_RESULT"),
             "Docker Build": env("DOCKER_BUILD_RESULT"),
             "Trivy Image": env("TRIVY_IMAGE_RESULT"),
@@ -354,6 +355,61 @@ def parse_sonar():
     }
 
 
+def parse_sbom():
+
+    files = find_files(EVIDENCE / "sbom", "*.json")
+
+    if not files:
+        return {"available": False, "component_count": 0, "components": []}
+
+    data = read_json(files[0])
+
+    if not data:
+        return {"available": False, "component_count": 0, "components": []}
+
+    metadata = data.get("metadata") or {}
+    product = metadata.get("component") or {}
+    components = data.get("components") or []
+
+    parsed_components = []
+
+    for component in components[:100]:
+        licenses = []
+
+        for entry in component.get("licenses") or []:
+            license_data = entry.get("license") or {}
+            license_name = (
+                license_data.get("name")
+                or license_data.get("id")
+                or entry.get("expression")
+            )
+            if license_name:
+                licenses.append(license_name)
+
+        parsed_components.append({
+            "name": component.get("name", ""),
+            "version": component.get("version", ""),
+            "type": component.get("type", ""),
+            "purl": component.get("purl", ""),
+            "licenses": ", ".join(licenses)
+        })
+
+    return {
+        "available": True,
+        "source": relative(files[0]),
+        "format": data.get("bomFormat", "Not available"),
+        "spec_version": data.get("specVersion", "Not available"),
+        "serial_number": data.get("serialNumber", "Not available"),
+        "bom_version": data.get("version", "Not available"),
+        "generated_at": metadata.get("timestamp", "Not available"),
+        "root_component": product.get("name", "Not available"),
+        "root_version": product.get("version", "Not available"),
+        "component_count": len(components),
+        "components": parsed_components,
+        "display_limit": min(len(components), 100)
+    }
+
+
 def parse_trivy_file(path, scan_type):
 
     data = read_json(path)
@@ -498,6 +554,7 @@ def build_data():
         "tests": parse_junit(),
         "jacoco": parse_jacoco(),
         "sonar": parse_sonar(),
+        "sbom": parse_sbom(),
         "trivy": parse_trivy(),
 
         "docker": {
@@ -573,6 +630,7 @@ def render_html(data):
     tests = data["tests"]
     jacoco = data["jacoco"]
     sonar = data["sonar"]
+    sbom = data["sbom"]
     trivy = data["trivy"]
     docker = data["docker"]
 
@@ -657,6 +715,53 @@ def render_html(data):
         "</tr>"
         for issue in sonar["issues"]
     )
+
+    sbom_rows = "".join(
+        "<tr>"
+        f"<td>{esc(component['name'])}</td>"
+        f"<td>{esc(component['version'])}</td>"
+        f"<td>{esc(component['type'])}</td>"
+        f"<td>{esc(component['licenses'])}</td>"
+        f"<td>{esc(component['purl'])}</td>"
+        "</tr>"
+        for component in sbom.get("components", [])
+    )
+
+    sbom_table = (
+        "<div class='table-wrap'><table><thead><tr>"
+        "<th>Component</th><th>Version</th><th>Type</th>"
+        "<th>License</th><th>Package URL</th>"
+        "</tr></thead><tbody>"
+        + sbom_rows
+        + "</tbody></table></div>"
+        if sbom_rows
+        else "<p class='muted'>SBOM contains no component entries.</p>"
+    )
+
+    if sbom.get("available"):
+        sbom_summary = (
+            "<div class='meta'>"
+            f"<div><b>Format:</b> {esc(sbom.get('format', 'Not available'))}</div>"
+            f"<div><b>Spec version:</b> {esc(sbom.get('spec_version', 'Not available'))}</div>"
+            f"<div><b>Root component:</b> {esc(sbom.get('root_component', 'Not available'))}</div>"
+            f"<div><b>Root version:</b> {esc(sbom.get('root_version', 'Not available'))}</div>"
+            f"<div><b>Components:</b> {esc(sbom.get('component_count', 0))}</div>"
+            f"<div><b>Generated:</b> {esc(sbom.get('generated_at', 'Not available'))}</div>"
+            f"<div><b>Evidence file:</b> {esc(sbom.get('source', 'Unavailable'))}</div>"
+            "</div>"
+        )
+
+        if sbom.get("component_count", 0) > 100:
+            sbom_summary += (
+                "<p class='muted'>Showing the first 100 components; "
+                "the complete CycloneDX file is included in the report artifact.</p>"
+            )
+
+        sbom_summary += sbom_table
+    else:
+        sbom_summary = (
+            "<p class='muted'>SBOM artifact is unavailable for this run.</p>"
+        )
 
     fs = trivy["filesystem"]
     image = trivy["image"]
@@ -896,6 +1001,12 @@ footer {{ text-align: center; padding: 20px; color: #64748b; }}
 </section>
 
 <section>
+<h2>Software Bill of Materials</h2>
+{sbom_summary}
+<p class="note">The SBOM inventories software components and versions for review and supply-chain traceability. It is an inventory; vulnerability findings are reported separately in the Trivy section.</p>
+</section>
+
+<section>
 <h2>Trivy security evidence</h2>
 <div class="grid">
 <div class="metric">
@@ -939,6 +1050,7 @@ Scan scope: workflow filters HIGH and CRITICAL severities and ignores unfixed vu
 <tr><td>Structural coverage</td><td>JaCoCo counters and coverage</td><td>Evidence of measured code coverage</td></tr>
 <tr><td>Static analysis</td><td>SonarCloud measures and Quality Gate</td><td>Evidence of code quality analysis</td></tr>
 <tr><td>Security analysis</td><td>Trivy filesystem and image findings</td><td>Evidence of configured security scans</td></tr>
+<tr><td>Software component inventory</td><td>CycloneDX SBOM with component names and versions</td><td>Identifies third-party and software components included in the build</td></tr>
 <tr><td>Deployment package</td><td>Docker image tag and digest</td><td>Identifies the produced container image</td></tr>
 <tr><td>Traceability</td><td>Repository, commit and workflow run</td><td>Links evidence to source revision and CI execution</td></tr>
 </tbody>

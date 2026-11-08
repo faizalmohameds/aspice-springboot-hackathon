@@ -14,6 +14,7 @@ This provides a lightweight, reviewable link from a change to its intended need.
 2. A pull request with no requirement ID fails with an actionable message.
 3. A pull request referencing an ID without a matching `docs/requirements/<ID>.md` record fails.
 4. Push and manual workflow runs do not require pull request metadata.
+5. The final ASPICE report shows the SBOM format, root component, generation time, component count, and a component inventory, while preserving the complete SBOM as evidence.
 
 ## Verification evidence
 

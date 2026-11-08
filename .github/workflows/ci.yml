@@ -427,6 +427,7 @@ jobs:
       - maven-build
       - unit-test
       - sonarqube
+      - dependency-sbom
       - trivy-fs
       - docker-build
       - trivy-image
@@ -448,6 +449,14 @@ jobs:
         with:
           name: ASPICE-Test-Reports
           path: evidence/tests
+
+      - name: Download SBOM Evidence
+        if: always()
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ASPICE-Software-Bill-of-Materials
+          path: evidence/sbom
 
       - name: Download Trivy Evidence
         if: always()
@@ -476,6 +485,7 @@ jobs:
           BUILD_RESULT: ${{ needs.maven-build.result }}
           TEST_RESULT: ${{ needs.unit-test.result }}
           SONAR_RESULT: ${{ needs.sonarqube.result }}
+          SBOM_RESULT: ${{ needs.dependency-sbom.result }}
           TRIVY_FS_RESULT: ${{ needs.trivy-fs.result }}
           DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
           TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
@@ -498,6 +508,7 @@ jobs:
           BUILD_RESULT: ${{ needs.maven-build.result }}
           TEST_RESULT: ${{ needs.unit-test.result }}
           SONAR_RESULT: ${{ needs.sonarqube.result }}
+          SBOM_RESULT: ${{ needs.dependency-sbom.result }}
           TRIVY_FS_RESULT: ${{ needs.trivy-fs.result }}
           DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
           TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
@@ -511,6 +522,7 @@ jobs:
             echo "| Maven Build | $BUILD_RESULT |"
             echo "| Unit Tests | $TEST_RESULT |"
             echo "| SonarCloud | $SONAR_RESULT |"
+            echo "| Software Bill of Materials | $SBOM_RESULT |"
             echo "| Trivy Filesystem | $TRIVY_FS_RESULT |"
             echo "| Docker Build | $DOCKER_BUILD_RESULT |"
             echo "| Trivy Image | $TRIVY_IMAGE_RESULT |"
