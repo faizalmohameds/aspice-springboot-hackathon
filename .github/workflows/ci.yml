@@ -3,7 +3,7 @@ name: Spring Boot ASPICE CI Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, 'feature/**', 'codex/**']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -411,16 +411,24 @@ jobs:
         id: push-image
         run: |
           IMAGE="${IMAGE_NAME,,}"
-          TAG="${GITHUB_SHA}"
+          SHA_TAG="${GITHUB_SHA}"
+          BRANCH_TAG=$(printf '%s' "$GITHUB_REF_NAME" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//' \
+            | cut -c1-120)
+          BRANCH_TAG=${BRANCH_TAG:-branch}
 
-          docker push "$IMAGE:$TAG"
+          docker tag "$IMAGE:$SHA_TAG" "$IMAGE:$BRANCH_TAG"
+          docker push "$IMAGE:$SHA_TAG"
+          docker push "$IMAGE:$BRANCH_TAG"
 
           DIGEST=$(docker inspect \
             --format='{{index .RepoDigests 0}}' \
-            "$IMAGE:$TAG" | cut -d '@' -f 2)
+            "$IMAGE:$SHA_TAG" | cut -d '@' -f 2)
 
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$SHA_TAG" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
 
@@ -564,7 +572,10 @@ jobs:
     needs:
       - aspice-report
 
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.aspice-report.result == 'success' }}
+    if: >-
+      ${{ !cancelled() && needs.aspice-report.result == 'success' &&
+          ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+           (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
 
     permissions:
       pages: write
