@@ -16,7 +16,7 @@ Try:
 - `GET http://localhost:8080/api/health` — returns the application health status as JSON.
 - `GET http://localhost:8080/actuator/health`
 
-The `/api/health` endpoint is a GET request with no request body. It returns `application`, `status`, and an ISO-8601 UTC `timestamp`. The existing `/api/status` endpoint remains available. See `docs/requirements/REQ-API-001.md` for the request and response contract.
+The `/api/health` endpoint is a GET request with no request body. It returns `application`, `status`, and an ISO-8601 UTC `timestamp`. The existing `/api/status` endpoint remains available. The requirement and acceptance criteria are tracked in [Jira issue SCRUM-6](https://faizalmohameds620.atlassian.net/browse/SCRUM-6).
 
 ## Build and run with Docker
 
@@ -29,7 +29,7 @@ docker run --rm -p 8080:8080 aspice-demo:local
 
 The workflow at `.github/workflows/ci.yml` also provides:
 
-- A pull request traceability gate: include a registered requirement ID (for example `REQ-CI-001`) in the PR title or description. The ID must have a matching Markdown record under `docs/requirements/`.
+- A Jira-backed pull request traceability gate: include an existing issue key from the `SCRUM` project (for example `SCRUM-6`) in the PR title or description. The workflow verifies the issue through Jira's REST API and requires the `aspice-requirement` label.
 - A CycloneDX software bill of materials (SBOM), saved as a 90-day workflow artifact and summarized in the final ASPICE report.
 - Maven build and JUnit/JaCoCo verification reports.
 - SonarCloud quality analysis and Trivy filesystem and image scan evidence.
@@ -37,6 +37,8 @@ The workflow at `.github/workflows/ci.yml` also provides:
 - A Docker image published to GHCR after the image scan on non-PR runs.
 
 Push this project to a GitHub repository with its default branch named `main`. No personal access token is needed for GHCR when the workflow's `GITHUB_TOKEN` has package write permission. Depending on repository/org package settings, you may need to make the package visible or link it to the repository.
+
+For Jira traceability, configure the repository Actions secrets `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`. The token is used only by the pull request traceability job and must not be committed to the repository.
 
 ## ASPICE hackathon demonstration mapping
 
@@ -53,4 +55,4 @@ This is an engineering workflow example, **not an ASPICE compliance claim or cer
 
 ## Requirement traceability demonstration
 
-`docs/requirements/REQ-CI-001.md` defines the pull request traceability requirement and acceptance criteria. Reference the ID in a pull request and use the traceability job result, test reports, SBOM, security scans, and generated report as objective evidence. This is an engineering workflow example, not an ASPICE compliance claim or certification.
+Create and maintain requirements in Jira, apply the `aspice-requirement` label, then reference the Jira issue key in each pull request. The traceability job confirms that each referenced issue exists in the configured Jira project and carries that label. Use the job result, test reports, SBOM, security scans, and generated report as objective evidence. This is an engineering workflow example, not an ASPICE compliance claim or certification.

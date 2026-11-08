@@ -24,38 +24,56 @@ jobs:
     if: github.event_name == 'pull_request'
 
     outputs:
-      requirement_ids: ${{ steps.check.outputs.requirement_ids }}
+      jira_issue_keys: ${{ steps.check.outputs.jira_issue_keys }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check pull request requirement IDs
+      - name: Validate Jira requirement issues
         id: check
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: SCRUM
         run: |
           set -euo pipefail
 
-          text="$PR_TITLE $PR_BODY"
-          mapfile -t requirement_ids < <(printf '%s' "$text" | grep -oE 'REQ-[A-Z]+-[0-9]+' | sort -u || true)
-
-          if [ "${#requirement_ids[@]}" -eq 0 ]; then
-            echo "::error::Add a registered requirement ID (for example REQ-CI-001) to the pull request title or description."
+          if [ -z "$JIRA_BASE_URL" ] || [ -z "$JIRA_EMAIL" ] || [ -z "$JIRA_API_TOKEN" ]; then
+            echo "::error::Configure JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN as GitHub Actions secrets."
             exit 1
           fi
 
-          for requirement_id in "${requirement_ids[@]}"; do
-            if [ ! -s "docs/requirements/${requirement_id}.md" ]; then
-              echo "::error::No requirement record found at docs/requirements/${requirement_id}.md"
+          text="$PR_TITLE $PR_BODY"
+          mapfile -t issue_keys < <(printf '%s' "$text" | grep -oE "${JIRA_PROJECT_KEY}-[0-9]+" | sort -u || true)
+
+          if [ "${#issue_keys[@]}" -eq 0 ]; then
+            echo "::error::Add a Jira requirement key (for example SCRUM-6) to the pull request title or description."
+            exit 1
+          fi
+
+          jira_url="${JIRA_BASE_URL%/}"
+          for issue_key in "${issue_keys[@]}"; do
+            if ! issue_json=$(curl --fail --silent --show-error \
+              --user "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+              --header "Accept: application/json" \
+              "$jira_url/rest/api/3/issue/${issue_key}?fields=project,summary,labels"); then
+              echo "::error::Could not retrieve Jira issue ${issue_key}. Check the Jira secrets, token permissions, and issue key."
               exit 1
             fi
-            echo "Verified ${requirement_id}"
+
+            project_key=$(jq -r '.fields.project.key // empty' <<< "$issue_json")
+            summary=$(jq -r '.fields.summary // empty' <<< "$issue_json")
+            is_requirement=$(jq -r '(.fields.labels // []) | any(. == "aspice-requirement")' <<< "$issue_json")
+            if [ "$project_key" != "$JIRA_PROJECT_KEY" ] || [ -z "$summary" ] || [ "$is_requirement" != "true" ]; then
+              echo "::error::${issue_key} must exist in Jira project ${JIRA_PROJECT_KEY} and have the aspice-requirement label."
+              exit 1
+            fi
+            echo "Verified Jira issue ${issue_key}: ${summary}"
           done
 
-          requirement_ids_csv=$(IFS=,; echo "${requirement_ids[*]}")
-          echo "requirement_ids=${requirement_ids_csv}" >> "$GITHUB_OUTPUT"
+          issue_keys_csv=$(IFS=,; echo "${issue_keys[*]}")
+          echo "jira_issue_keys=${issue_keys_csv}" >> "$GITHUB_OUTPUT"
 
   # SOFTWARE BILL OF MATERIALS
   dependency-sbom:
@@ -499,7 +517,8 @@ jobs:
       - name: Generate ASPICE Report
         env:
           REQUIREMENT_TRACE_RESULT: ${{ needs.requirement-traceability.result }}
-          REQUIREMENT_IDS: ${{ needs.requirement-traceability.outputs.requirement_ids }}
+          JIRA_ISSUE_KEYS: ${{ needs.requirement-traceability.outputs.jira_issue_keys }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           BUILD_RESULT: ${{ needs.maven-build.result }}
           TEST_RESULT: ${{ needs.unit-test.result }}
           SONAR_RESULT: ${{ needs.sonarqube.result }}
@@ -524,7 +543,7 @@ jobs:
         if: always()
         env:
           REQUIREMENT_TRACE_RESULT: ${{ needs.requirement-traceability.result }}
-          REQUIREMENT_IDS: ${{ needs.requirement-traceability.outputs.requirement_ids }}
+          JIRA_ISSUE_KEYS: ${{ needs.requirement-traceability.outputs.jira_issue_keys }}
           BUILD_RESULT: ${{ needs.maven-build.result }}
           TEST_RESULT: ${{ needs.unit-test.result }}
           SONAR_RESULT: ${{ needs.sonarqube.result }}
@@ -540,7 +559,7 @@ jobs:
             echo "| CI Stage | Result |"
             echo "|---|---|"
             echo "| Requirement Traceability | $REQUIREMENT_TRACE_RESULT |"
-            echo "| Requirement IDs | ${REQUIREMENT_IDS:-Not available} |"
+            echo "| Jira Requirement Issues | ${JIRA_ISSUE_KEYS:-Not available} |"
             echo "| Maven Build | $BUILD_RESULT |"
             echo "| Unit Tests | $TEST_RESULT |"
             echo "| SonarCloud | $SONAR_RESULT |"
