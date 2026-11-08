@@ -981,9 +981,9 @@ footer {{ text-align: center; padding: 20px; color: #64748b; }}
 
 <section>
 <h2>Requirement traceability</h2>
-<p>{esc(data['requirements']['check_description'])}</p>
-<p><b>Job result:</b> <span class="pill {status_class(data['requirements']['traceability_status'])}">{esc(data['requirements']['traceability_status'])}</span></p>
-<p><b>Requirements verified:</b> {esc(', '.join(data['requirements']['ids']) if data['requirements']['ids'] else 'Not available (the check only runs on pull requests)')}</p>
+<p>{esc(pipeline['requirements']['check_description'])}</p>
+<p><b>Job result:</b> <span class="pill {status_class(pipeline['requirements']['traceability_status'])}">{esc(pipeline['requirements']['traceability_status'])}</span></p>
+<p><b>Requirements verified:</b> {esc(', '.join(pipeline['requirements']['ids']) if pipeline['requirements']['ids'] else 'Not available (the check only runs on pull requests)')}</p>
 <p class="muted">This is a lightweight ID-to-document presence check. It does not assess requirement completeness, implementation correctness, or test coverage.</p>
 </section>
 
