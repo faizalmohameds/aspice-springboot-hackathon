@@ -98,15 +98,16 @@ def parse_pipeline():
 
         "requirements": {
             "traceability_status": env("REQUIREMENT_TRACE_RESULT"),
-            "ids": [
+            "jira_issue_keys": [
                 item.strip()
-                for item in os.getenv("REQUIREMENT_IDS", "").split(",")
+                for item in os.getenv("JIRA_ISSUE_KEYS", "").split(",")
                 if item.strip()
             ],
+            "jira_base_url": os.getenv("JIRA_BASE_URL", "").rstrip("/"),
             "check_description": (
-                "For pull requests, confirms at least one REQ-<AREA>-<NUMBER> "
-                "identifier appears in the title or description and that each "
-                "identifier has a non-empty docs/requirements/<ID>.md record."
+                "For pull requests, confirms at least one Jira issue key appears "
+                "in the title or description and that each issue exists in the "
+                "configured Jira project with the aspice-requirement label."
             )
         }
     }
@@ -852,6 +853,16 @@ def render_html(data):
         else "Not available"
     )
 
+    jira_issue_links = ", ".join(
+        (
+            f"<a href='{esc(pipeline['requirements']['jira_base_url'])}/browse/{esc(issue_key)}'>"
+            f"{esc(issue_key)}</a>"
+            if pipeline["requirements"]["jira_base_url"]
+            else esc(issue_key)
+        )
+        for issue_key in pipeline["requirements"]["jira_issue_keys"]
+    ) or "Not available (traceability runs only on pull requests)"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -983,8 +994,8 @@ footer {{ text-align: center; padding: 20px; color: #64748b; }}
 <h2>Requirement traceability</h2>
 <p>{esc(pipeline['requirements']['check_description'])}</p>
 <p><b>Job result:</b> <span class="pill {status_class(pipeline['requirements']['traceability_status'])}">{esc(pipeline['requirements']['traceability_status'])}</span></p>
-<p><b>Requirements verified:</b> {esc(', '.join(pipeline['requirements']['ids']) if pipeline['requirements']['ids'] else 'Not available (the check only runs on pull requests)')}</p>
-<p class="muted">This is a lightweight ID-to-document presence check. It does not assess requirement completeness, implementation correctness, or test coverage.</p>
+<p><b>Jira issues verified:</b> {jira_issue_links}</p>
+<p class="muted">This check confirms Jira issue existence, project membership, and the aspice-requirement label. It does not assess requirement completeness, implementation correctness, or test coverage.</p>
 </section>
 
 <section>
