@@ -21,6 +21,7 @@ jobs:
   requirement-traceability:
     name: 0 - Requirement Traceability
     runs-on: ubuntu-latest
+    environment: Dev
     if: github.event_name == 'pull_request'
 
     outputs:
