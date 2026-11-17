@@ -458,6 +458,9 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
 
+    outputs:
+      artifact_url: ${{ steps.report-artifact.outputs.artifact-url }}
+
     needs:
       - requirement-traceability
       - maven-build
@@ -566,16 +569,9 @@ jobs:
           DOCKER_BUILD_RESULT: ${{ needs.docker-build.result }}
           TRIVY_IMAGE_RESULT: ${{ needs.trivy-image.result }}
           DOCKER_PUSH_RESULT: ${{ needs.docker-push.result }}
-          REPORT_ARTIFACT_URL: ${{ steps.report-artifact.outputs.artifact-url }}
         run: |
           {
             echo "# ASPICE Evidence Report"
-            echo ""
-            if [ -n "$REPORT_ARTIFACT_URL" ]; then
-              echo "[Download the ASPICE report artifact (HTML, JSON, and supporting evidence)]($REPORT_ARTIFACT_URL)"
-            else
-              echo "Download the ASPICE report from this run's Artifacts section."
-            fi
             echo ""
             echo "| CI Stage | Result |"
             echo "|---|---|"
@@ -590,3 +586,18 @@ jobs:
             echo "| Trivy Image | $TRIVY_IMAGE_RESULT |"
             echo "| Docker Push | $DOCKER_PUSH_RESULT |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Publish the artifact URL in a dedicated job summary.
+  aspice-report-download-url:
+    name: 9 - ASPICE Artifact Download URL
+    runs-on: ubuntu-latest
+    needs: aspice-report
+    if: always() && needs.aspice-report.outputs.artifact_url != ''
+    steps:
+      - name: Publish artifact download URL
+        env:
+          REPORT_ARTIFACT_URL: ${{ needs.aspice-report.outputs.artifact_url }}
+        run: |
+          echo "# ASPICE Report Artifact" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download the ASPICE report artifact]($REPORT_ARTIFACT_URL)" >> "$GITHUB_STEP_SUMMARY"
