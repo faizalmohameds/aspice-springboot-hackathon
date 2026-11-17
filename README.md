@@ -33,7 +33,7 @@ The workflow at `.github/workflows/ci.yml` also provides:
 - A CycloneDX software bill of materials (SBOM), saved as a 90-day workflow artifact and summarized in the final ASPICE report.
 - Maven build and JUnit/JaCoCo verification reports.
 - SonarCloud quality analysis and Trivy filesystem and image scan evidence.
-- An ASPICE evidence report and HTML deployment to GitHub Pages.
+- An ASPICE evidence report uploaded as a downloadable 90-day workflow artifact; the run summary links to it.
 - A Docker image published to GHCR after the image scan on non-PR runs.
 
 Push this project to a GitHub repository with its default branch named `main`. No personal access token is needed for GHCR when the workflow's `GITHUB_TOKEN` has package write permission. Depending on repository/org package settings, you may need to make the package visible or link it to the repository.
