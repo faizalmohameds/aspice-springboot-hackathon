@@ -1,0 +1,345 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+stages:
+  - validate
+  - build
+  - test
+  - analysis
+  - security
+  - package
+  - publish
+  - report
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: "/certs"
+
+cache:
+  key: maven-$CI_COMMIT_REF_SLUG
+  paths:
+    - .m2/repository/
+
+requirement-traceability:
+  stage: validate
+  image: ubuntu:24.04
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends curl jq
+    - |
+      set -euo pipefail
+      : "${JIRA_BASE_URL:?Set JIRA_BASE_URL in GitLab CI/CD variables}"
+      : "${JIRA_EMAIL:?Set JIRA_EMAIL in GitLab CI/CD variables}"
+      : "${JIRA_API_TOKEN:?Set JIRA_API_TOKEN in GitLab CI/CD variables}"
+      text="${CI_MERGE_REQUEST_TITLE:-} ${CI_MERGE_REQUEST_DESCRIPTION:-}"
+      issue_keys=$(printf '%s' "$text" | grep -oE 'SCRUM-[0-9]+' | sort -u || true)
+      if [ -z "$issue_keys" ]; then
+        echo "Add a Jira requirement key (for example SCRUM-6) to the merge request title or description."
+        exit 1
+      fi
+      jira_url="${JIRA_BASE_URL%/}"
+      while IFS= read -r issue_key; do
+        issue_json=$(curl --fail --silent --show-error \
+          --user "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+          --header 'Accept: application/json' \
+          "$jira_url/rest/api/3/issue/$issue_key?fields=project,summary,labels")
+        project_key=$(jq -r '.fields.project.key // empty' <<< "$issue_json")
+        summary=$(jq -r '.fields.summary // empty' <<< "$issue_json")
+        is_requirement=$(jq -r '(.fields.labels // []) | any(. == "aspice-requirement")' <<< "$issue_json")
+        if [ "$project_key" != "SCRUM" ] || [ -z "$summary" ] || [ "$is_requirement" != "true" ]; then
+          echo "$issue_key must exist in Jira project SCRUM and have the aspice-requirement label."
+          exit 1
+        fi
+        echo "Verified Jira issue $issue_key: $summary"
+      done <<< "$issue_keys"
+      printf 'JIRA_ISSUE_KEYS=%s\n' "$(printf '%s' "$issue_keys" | paste -sd, -)" > trace-status.env
+  after_script:
+    - 'touch trace-status.env; printf "REQUIREMENT_TRACE_RESULT=%s\n" "$CI_JOB_STATUS" >> trace-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: trace-status.env
+    paths:
+      - trace-status.env
+    expire_in: 90 days
+
+maven-build:
+  stage: build
+  image: maven:3.9-eclipse-temurin-21
+  script:
+    - mvn -B clean package -DskipTests
+    - mkdir -p dist
+    - cp target/*.jar dist/
+  after_script:
+    - 'printf "BUILD_RESULT=%s\n" "$CI_JOB_STATUS" > build-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: build-status.env
+    paths:
+      - dist/*.jar
+      - build-status.env
+    expire_in: 7 days
+
+unit-test:
+  stage: test
+  image: maven:3.9-eclipse-temurin-21
+  script:
+    - mvn -B clean verify
+  after_script:
+    - 'printf "TEST_RESULT=%s\n" "$CI_JOB_STATUS" > test-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: test-status.env
+      junit:
+        - target/surefire-reports/TEST-*.xml
+        - target/failsafe-reports/TEST-*.xml
+    paths:
+      - target/surefire-reports/
+      - target/failsafe-reports/
+      - target/site/jacoco/
+      - target/classes/
+      - target/test-classes/
+      - test-status.env
+    expire_in: 90 days
+
+sonarqube:
+  stage: analysis
+  image: maven:3.9-eclipse-temurin-21
+  needs:
+    - job: unit-test
+      artifacts: true
+  script:
+    - test -f target/site/jacoco/jacoco.xml
+    - |
+      mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar \
+        -Dsonar.host.url="$SONAR_HOST_URL" \
+        -Dsonar.organization="$SONAR_ORGANIZATION" \
+        -Dsonar.projectKey="$SONAR_PROJECT_KEY" \
+        -Dsonar.token="$SONAR_TOKEN" \
+        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+        -Dsonar.qualitygate.wait=true
+    - mkdir -p aspice-evidence/sonar
+    - |
+      curl --fail --silent --show-error -u "$SONAR_TOKEN:" \
+        "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=coverage,bugs,vulnerabilities,code_smells,security_hotspots,duplicated_lines_density,sqale_index,reliability_rating,security_rating,sqale_rating,ncloc" \
+        -o aspice-evidence/sonar/sonar-measures.json
+      curl --fail --silent --show-error -u "$SONAR_TOKEN:" \
+        "$SONAR_HOST_URL/api/qualitygates/project_status?projectKey=$SONAR_PROJECT_KEY" \
+        -o aspice-evidence/sonar/sonar-quality-gate.json
+      curl --fail --silent --show-error -u "$SONAR_TOKEN:" \
+        "$SONAR_HOST_URL/api/issues/search?componentKeys=$SONAR_PROJECT_KEY&resolved=false&ps=500" \
+        -o aspice-evidence/sonar/sonar-issues.json
+  after_script:
+    - 'printf "SONAR_RESULT=%s\n" "$CI_JOB_STATUS" > sonar-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: sonar-status.env
+    paths:
+      - aspice-evidence/sonar/
+      - sonar-status.env
+    expire_in: 90 days
+
+dependency-sbom:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  needs:
+    - job: maven-build
+      artifacts: false
+  script:
+    - mkdir -p aspice-evidence/sbom
+    - trivy fs --format cyclonedx --output aspice-evidence/sbom/aspice-sbom.cdx.json --exit-code 0 .
+  after_script:
+    - 'printf "SBOM_RESULT=%s\n" "$CI_JOB_STATUS" > sbom-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: sbom-status.env
+    paths:
+      - aspice-evidence/sbom/
+      - sbom-status.env
+    expire_in: 90 days
+
+trivy-fs:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  needs: []
+  script:
+    - mkdir -p aspice-evidence/trivy/filesystem
+    - trivy fs --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --ignore-unfixed --format json --output aspice-evidence/trivy/filesystem/trivy-fs-results.json --exit-code 0 .
+  after_script:
+    - 'printf "TRIVY_FS_RESULT=%s\n" "$CI_JOB_STATUS" > trivy-fs-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: trivy-fs-status.env
+    paths:
+      - aspice-evidence/trivy/filesystem/
+      - trivy-fs-status.env
+    expire_in: 90 days
+
+docker-build:
+  stage: package
+  image: docker:27.5.1-cli
+  services:
+    - name: docker:27.5.1-dind
+      alias: docker
+  needs:
+    - job: maven-build
+      artifacts: false
+  script:
+    - mkdir -p aspice-evidence/docker
+    - docker build --pull --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    - docker save "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" -o aspice-evidence/docker/aspice-docker-image.tar
+  after_script:
+    - 'printf "DOCKER_BUILD_RESULT=%s\n" "$CI_JOB_STATUS" > docker-build-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: docker-build-status.env
+    paths:
+      - aspice-evidence/docker/aspice-docker-image.tar
+      - docker-build-status.env
+    expire_in: 2 days
+
+trivy-image:
+  stage: package
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  needs:
+    - job: docker-build
+      artifacts: true
+  script:
+    - mkdir -p aspice-evidence/trivy/image
+    - trivy image --input aspice-evidence/docker/aspice-docker-image.tar --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --format json --output aspice-evidence/trivy/image/trivy-image-results.json --exit-code 0
+  after_script:
+    - 'printf "TRIVY_IMAGE_RESULT=%s\n" "$CI_JOB_STATUS" > trivy-image-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: trivy-image-status.env
+    paths:
+      - aspice-evidence/trivy/image/
+      - trivy-image-status.env
+    expire_in: 90 days
+
+docker-push:
+  stage: publish
+  image: docker:27.5.1-cli
+  services:
+    - name: docker:27.5.1-dind
+      alias: docker
+  needs:
+    - job: docker-build
+      artifacts: true
+    - job: trivy-image
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"'
+  script:
+    - docker load -i aspice-evidence/docker/aspice-docker-image.tar
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" --username "$CI_REGISTRY_USER" --password-stdin
+    - docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+    - printf 'DOCKER_IMAGE=%s\nDOCKER_TAG=%s\n' "$CI_REGISTRY_IMAGE" "$CI_COMMIT_SHA" > docker-push-status.env
+    - docker inspect --format='{{index .RepoDigests 0}}' "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" | sed 's/.*@//' | sed 's/^/DOCKER_DIGEST=/' >> docker-push-status.env
+  after_script:
+    - 'touch docker-push-status.env; printf "DOCKER_PUSH_RESULT=%s\n" "$CI_JOB_STATUS" >> docker-push-status.env'
+  artifacts:
+    when: always
+    reports:
+      dotenv: docker-push-status.env
+    paths:
+      - docker-push-status.env
+    expire_in: 90 days
+
+aspice-report:
+  stage: report
+  image: python:3.12-slim
+  when: always
+  needs:
+    - job: requirement-traceability
+      artifacts: true
+      optional: true
+    - job: maven-build
+      artifacts: false
+    - job: unit-test
+      artifacts: true
+    - job: sonarqube
+      artifacts: true
+    - job: dependency-sbom
+      artifacts: true
+    - job: trivy-fs
+      artifacts: true
+    - job: docker-build
+      artifacts: false
+    - job: trivy-image
+      artifacts: true
+    - job: docker-push
+      artifacts: true
+      optional: true
+  script:
+    - mkdir -p evidence/tests evidence/sbom evidence/trivy evidence/sonar aspice-report
+    - if [ -d aspice-evidence/sbom ]; then cp -R aspice-evidence/sbom/. evidence/sbom/; fi
+    - if [ -d aspice-evidence/trivy ]; then cp -R aspice-evidence/trivy/. evidence/trivy/; fi
+    - if [ -d aspice-evidence/sonar ]; then cp -R aspice-evidence/sonar/. evidence/sonar/; fi
+    - if [ -d target/surefire-reports ]; then cp -R target/surefire-reports evidence/tests/surefire-reports; fi
+    - if [ -d target/failsafe-reports ]; then cp -R target/failsafe-reports evidence/tests/failsafe-reports; fi
+    - if [ -d target/site/jacoco ]; then cp -R target/site/jacoco evidence/tests/jacoco; fi
+    - |
+      export GITHUB_REPOSITORY="$CI_PROJECT_PATH"
+      export GITHUB_SHA="$CI_COMMIT_SHA"
+      export GITHUB_RUN_ID="$CI_PIPELINE_ID"
+      export GITHUB_SERVER_URL="$CI_SERVER_URL"
+      export GITHUB_WORKFLOW="GitLab CI"
+      export GITHUB_REF_NAME="$CI_COMMIT_REF_NAME"
+      export GITHUB_ACTOR="${GITLAB_USER_LOGIN:-GitLab CI}"
+      export GITHUB_EVENT_NAME="$CI_PIPELINE_SOURCE"
+      export JIRA_BASE_URL
+      export DOCKER_IMAGE="${DOCKER_IMAGE:-$CI_REGISTRY_IMAGE}"
+      export DOCKER_TAG="${DOCKER_TAG:-$CI_COMMIT_SHA}"
+      export DOCKER_DIGEST="${DOCKER_DIGEST:-Not available}"
+      python -m py_compile scripts/generate_aspice_report.py
+      python scripts/generate_aspice_report.py
+      test -s aspice-report/aspice-report.html
+      test -s aspice-report/aspice-report.json
+      printf 'ASPICE_REPORT_URL=%s/-/jobs/%s/artifacts/file/aspice-report/aspice-report.html\n' "$CI_PROJECT_URL" "$CI_JOB_ID" > aspice-report.env
+  artifacts:
+    when: always
+    reports:
+      dotenv: aspice-report.env
+    paths:
+      - aspice-report/
+      - evidence/
+      - aspice-report.env
+    expire_in: 90 days
+
+aspice-report-download-url:
+  stage: report
+  image: alpine:3.20
+  when: always
+  needs:
+    - job: aspice-report
+      artifacts: true
+  script:
+    - |
+      if [ -n "${ASPICE_REPORT_URL:-}" ]; then
+        echo "ASPICE HTML download URL: $ASPICE_REPORT_URL"
+      else
+        echo "The ASPICE report was not generated. Check the aspice-report job."
+      fi
